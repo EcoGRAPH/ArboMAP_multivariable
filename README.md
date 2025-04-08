@@ -22,6 +22,12 @@ This program is free software: you can redistribute it and/or modify it under th
 
 Version information:
 
+vMultivar
+Added multivariable versions of ArboMAP. 
+
+3vars can run three environmental variables.
+4vars can run four environmental variables. 
+
 v4.0
 
 Massive rewrite of the report output and format, including figures and narrative, based on feedback from public health partners.
