@@ -1,0 +1,4404 @@
+---
+params:
+  forecast_date: 
+    label: "Date to run the forecast for, e.g. 2018-08-15"
+    value: "2018-08-15"
+  state_name: 
+    label: "Name of state"
+    value:  "South Dakota"
+  state_code: 
+    label: "Two letter state abbreviation"
+    value: "SD"
+  predictor_var1: 
+    label: "Name of the first environmental predictor variable"
+    value: "tmeanc"
+  predictor_var2: 
+    label: "Name of the second environmental predictor variable"
+    value: "vpd"
+  mosquito_model: 
+    label: "Mosquito model type"
+    value: "stratifiedMIGR"
+    input: select
+    choices: ["simpleratio", "AUC", "MIGR", "MII", "stratifiedMIGR", "stratifiedMII"] 
+  mosquito_doy_start: 
+    label: "Start of mosquito modelling period (day of year)"
+    value: 140
+  mosquito_doy_end: 
+    label: "End of mosquito modelling period (day of year)"
+    value: 366
+  file_human: 
+    label: "Human data file"
+    value: !r file.path("data_human", "simulated_human_data.csv")
+    input: file
+  file_mosquito: 
+    label: "Mosquito pool data file"
+    value: !r file.path("data_mosquito", "simulated_mosquito_data.csv")
+    input: file
+  file_strata: 
+    label: "Stratification file, leave as \"\" if no strata"
+    value: !r file.path("data_strata", "example_strata_SD.csv")
+  file_county_sf: 
+    label: "Spatial data, either file location or command. Use \"create\" to download the census spatial data once and create a file in data_spatial folder. Use \"always_download\" to download census spatial data each time."
+    value: !r file.path("data_spatial", "sd_counties.RDS")
+  file_models: 
+    label: "Modelling formulas file"
+    value: !r file.path("data_models", "models.txt") 
+    input: file
+  folder_weather: 
+    label: "Folder where weather/environmental data files are located" 
+    value: "data_weather"
+  year_human_start: 
+    label: "Start year of human data to use and this will also be the start year of modelling"
+    value: 2004
+  year_human_end: 
+    label: "End year of human data to use. This will normally be the year before the current/forecast year."
+    value: 2017
+  year_mosquito_start: 
+    label: "Start year of mosquito data to use"
+    value: 2004
+  year_mosquito_end: 
+    label: "End year of mosquito data to use. This is normally the same year as the current/forecast year, or the last year of available mosquito information."
+    value: 2018
+  year_weather_start: 
+    label: "Start year of weather/environmental data to use. This should be at least the year before the start of human data."
+    value: 2000
+  year_weather_end: 
+    label: "End year of weather/environmental data to use. This is normally the same year as the current forecast year."
+    value: 2018
+  year_compare_vis1: 
+    label: "Year to highlight as a comparison year in certain graphs"
+    value: 2012
+  year_compare_vis2: 
+    label: "Second year to highlight as a comparison year in certain graphs"
+    value: 2017
+  create_appendix: 
+    label: "Create a detailed appendix?"
+    value: TRUE
+  lag_length: 
+    label: "Number of days of weather data to include in lags"
+    value: 121
+  case_trim_alpha: 
+    label: "Remove temporal outliers from human cases"
+    value: 0.02
+  dev_settings: 
+    label: "Developer settings, leave as \"!r list()\""
+    value: !r list()
+    
+title: "West Nile Virus Forecast Report for `r params$forecast_date`  \n`r params$state_name`"
+subtitle: "DEMO for Arbovirus Modeling and Prediction (ArboMAP): Synthetic Data  \nNot for Epidemiological Use"
+author: "Dawn M. Nekorchuk, Justin K. Davis, and Michael C. Wimberly    \n(mcwimberly@ou.edu)   \nGeography and Environmental Sustainability, University of Oklahoma"
+date: "Report compiled on `r format(Sys.time(), '%B %d, %Y')`"
+header-includes:
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    number_sections: TRUE
+  pdf_document:
+    toc: TRUE
+    number_sections: TRUE
+---
+
+```{r setup, include=FALSE}
+
+#VERSION
+version_text = "4.5"
+
+#knitr
+options(warn=-1)
+
+# replace NA with a dash in kable tables
+opts <- options(knitr.kable.NA = "-")
+
+```
+
+
+```{r libraries, include=FALSE}
+
+#make sure pacman is installed
+if (!require("pacman")) install.packages("pacman", repos="http://cran.us.r-project.org"); library(pacman)
+
+#load packages, install if not installed
+pacman::p_load(
+  #data processing, tidyverse 
+  dplyr, readr, tidyselect, rlang, tidyr, 
+  tibble, stringr, glue, lubridate, purrr,
+  #add'l data processing
+  zoo, 
+  #modeling & evaluation
+  mgcv, pROC, #splines, parallel are used but are base packages
+  #spatial, maps and graphs
+  tigris, sf, ggplot2, gridExtra, 
+  viridis, ggrepel, forcats, ggpubr,
+  #report generation and interface
+  knitr, rmarkdown, shiny)
+
+#Must use recent version of readr
+if (packageVersion("readr") < "2.1"){
+  install.packages("readr", repos="http://cran.us.r-project.org")
+}
+#Must use recent version of Rcpp
+if (packageVersion("Rcpp") < "1.0.7"){
+  install.packages("Rcpp", repos="http://cran.us.r-project.org")
+}
+
+# IF the user is trying to create a pdf, 
+# AND there is no LaTeX installation, 
+# THEN install tinytex
+if (knitr::is_latex_output() &
+    Sys.which("pdflatex") == ""){
+  install.packages("tinytex", repos="http://cran.us.r-project.org")
+  tinytex::install_tinytex()
+}
+# [DEV] If warning about new TeX, need to run: tinytex::reinstall_tinytex()
+# a test for this does not exist, but annual update script should take care of it
+
+# [DEV] This may not play well if they are using xelatex or lualatex instead
+# however, they need to set that in YAML headers too, so shouldn't be a problem here
+
+#Single use functions are found in their section 
+# for convenience when reviewing/editing code
+
+#for coloring text, that will work with EITHER pdf or html 
+#however, make sure color NAME is accepted in either 
+colorize <- function(x, color) {
+  if (knitr::is_latex_output()) {
+    pdf_color <- case_when(
+      color == "darkred" ~ "red",
+      color == "darkblue" ~ "blue",
+      TRUE ~ color
+    )
+    sprintf("\\textcolor{%s}{%s}", pdf_color, x)
+  } else if (knitr::is_html_output()) {
+    sprintf("<span style='color: %s;'>%s</span>", color, x)
+  } else x
+}
+#`r colorize("some words in red", "red")`
+#https://bookdown.org/yihui/rmarkdown-cookbook/font-color.html
+
+# [DEV] Notes on latex packages
+# Used for rotating page to landscape (wide time series graph, optional for ref map)
+# - \usepackage{pdflscape}
+# - \newcommand{\blandscape}{\begin{landscape}}
+# - \newcommand{\elandscape}{\end{landscape}}
+
+# For nice headers and page formatting
+# - \usepackage{fancyhdr}
+# - \pagestyle{fancy}
+
+```
+
+<!-- Start of internals: data load, processing, forecast modeling, etc. -->
+<!-- Code blocks: -->
+<!--  dev_parameters: Checks for overrides from named list of dev parameters. 
+Only really accessible if rmd called from script. -->
+<!--  data_load: Load all data - human, mosquito, environmental, spatial, models. 
+No data checks or processing here. -->
+<!--  data_id_fields: add a standardized arbo_ID field based on names or fips code, 
+depending on fields in datasets. One or the other, not a mix -->
+<!--  data_human_processing_dx: Process the human data, create diagnostics/stats -->
+<!--  data_mosq_processing_dx: Process the mosquito data, create diagnostics/stats -->
+<!--  mosquito_infection_model: run selected mosquito model to generate raw mir statistic -->
+<!--  mir_imputation: Imputation of any missing mir statistics from unknown/no data, mir_stat sused in modeling -->
+<!--  data_env_latest_history: processes the environment data
+      1) gets latest updated value for a day, 
+      2) creates historical doy means -->
+<!--  data_env_anomalization: calculates anomalies of environmental data via gam -->
+<!--  data_combine: combine all data and format for passing off for regression -->
+<!--  forecast_modeling: create the forecast models -->
+
+<!-- Note on code comment flags: [V3]: this is what was done in version 3; [DEV] developer note; [DMN] note from Dawn Nekorchuk; DEV or <<>>: active development -->
+
+```{r dev_parameters, echo=FALSE, include=FALSE}
+#input is named list
+
+#parameters available:
+
+##DATA
+# data_human: tbl of human case data (overrides file_human)
+# data_mosquito: tbl of mosquito pool data (overrides file_mosquito)
+# data_strata: tbl of strata (overrides file_stratification)
+# data_weather: tbl of weather data (overrides folder_weather & processing)
+# data_sf: sf object of counties for state (overrides file_county_sf)
+# model_formulas: model formulas to run (overrides file_models)
+
+##CACHED MODELS
+# save_models: TRUE/FALSE: Will create a list of saved model objects (using rest of input params)
+# models_cached: must be named list of model objects, named from modeling file to pattern match (output of save_models)
+
+##REGRESSION
+# mir_exactfit: T/F for how to handle missing MIR values in unknown years
+#             T - Original V3 with impute unknown MIR <- 0 and add exactfit
+#             F - using a MIR ~ total human cases linear model, no exactfit term. 
+# reg_function: "GAM" (hook for future possibility)
+
+##SAVING (for extra research files)
+#out_folder: "."
+#out_name_base: "ArboMAP_forecast_"
+#dev_write_output: write out a bunch of files into dev folder for testing and checking
+
+##EVALUATION
+#model_evaluation: TRUE/FALSE output model evaluation statistics
+
+##REPORT
+#highlight: list of counties to 'highlight' in report output. 
+# Needs to match names OR fips as in shapefile (depending on ID field used for arbo_ID)
+#highlight_mask: T/F, whether to highlight (red outline, FALSE, default) or mask out rest of state (TRUE)
+
+#NOTE: If not using dev parameter, do NOT include in list or instead set to NULL
+#     The test checks if the value is NULL. Not NA or "" or things like that. 
+# dev_settings itself is set to an empty list in default params above
+
+##DATA
+if (!is.null(params$dev_settings$data_human)){
+  #override data
+  data_human <- params$dev_settings$data_human
+} else {
+  #load from file, data_load code block
+  data_human <- NULL
+}
+if (!is.null(params$dev_settings$data_mosquito)){
+  #override data
+  data_mosquito <- params$dev_settings$data_mosquito
+} else {
+  #load from file, data_load code block
+  data_mosquito <- NULL
+}
+if (!is.null(params$dev_settings$data_strata)){
+  #override data
+  data_strata <- params$dev_settings$data_strata
+} else {
+  #load from file, data_load code block
+  data_strata <- NULL
+}
+# RAW, as processing will still happen on override data, except for deduplication
+if (!is.null(params$dev_settings$data_weather)){
+  #override data
+  data_env_raw <- params$dev_settings$data_weather
+} else {
+  #load from file, data_load code block
+  data_env_raw <- NULL
+}
+if (!is.null(params$dev_settings$data_sf)){
+  #override data
+  data_sf <- params$dev_settings$data_sf
+} else {
+  #load from file, data_load code block
+  data_sf <- NULL
+}
+if (!is.null(params$dev_settings$model_formulas)){
+  #override data
+  models_raw <- params$dev_settings$model_formulas
+  
+  #create named list from tbl
+  model_formulas <- models_raw %>% 
+    dplyr::pull(2, name = 1)
+  #just the model names for later use
+  model_names <- names(model_formulas)
+
+} else {
+  #load from file, data_load code block
+  model_formulas <- NULL
+}
+
+##CACHED MODELS
+if (!is.null(params$dev_settings$save_models)){
+  #use param given
+  save_models <- params$dev_settings$save_models
+} else {
+  #default is FALSE
+  save_models <- FALSE
+}
+#models_cached testing and possible use is done inside of forecast regression section
+if (!is.null(params$dev_settings$models_cached)){
+  #use param given
+  models_cached <- params$dev_settings$models_cached
+} else {
+  models_cached <- NULL
+}
+
+##REGRESSION
+if (!is.null(params$dev_settings$mir_exactfit)){
+  #use param given
+  mir_exactfit <- params$dev_settings$mir_exactfit
+} else {
+  #default is FALSE
+  mir_exactfit <- FALSE
+}
+if (!is.null(params$dev_settings$reg_function)){
+  #use param given
+  reg_function <- params$dev_settings$reg_function
+} else {
+  #default is the current and only way via mgcv bam
+  #this is being setup so that more may be added easily in the future [DMN]
+  reg_function <- "GAM"
+}
+
+##SAVING (for extra research files)
+if (!is.null(params$dev_settings$out_folder)){
+  #use param given
+  out_folder <- params$dev_settings$out_folder
+  #create out_folder if necessary
+  dir.create(out_folder, recursive = TRUE)
+} else {
+  out_folder <- "."
+}
+if (!is.null(params$dev_settings$out_name_base)){
+  #use param given
+  out_name_base <- params$dev_settings$out_name_base
+} else {
+  #default 
+  #out_name_base <- "ArboMAP_forecast_"
+  out_name_base <- paste0(params$mosquito_model, "_", Sys.time() %>% format("%Y%m%d%H%M"))
+}
+if (!is.null(params$dev_settings$dev_write_output)){
+  #use param given
+  dev_write_output <- params$dev_settings$dev_write_output
+} else {
+  dev_write_output <- FALSE
+}
+
+
+##EVALUATION
+if (!is.null(params$dev_settings$model_evaluation)){
+  #use param given
+  model_evaluation <- params$dev_settings$model_evaluation
+} else {
+  #default is to not save extra files, 
+  # only currently used in research comparing many models
+  model_evaluation <- FALSE
+}
+
+##REPORT
+if (!is.null(params$dev_settings$highlight)){
+  #use param given
+  highlight <- params$dev_settings$highlight
+  #set flag to true
+  highlight_flag <- TRUE
+} else {
+  #default is empty list (NULL)
+  highlight <- c()
+  highlight_flag <- FALSE
+}
+if (!is.null(params$dev_settings$highlight_mask)){
+  #use param given
+  highlight_mask <- params$dev_settings$highlight_mask
+} else {
+  #default is FALSE
+  highlight_mask <- FALSE
+}
+
+## OTHER
+#[V3] [DEV] imputemissingdistricts was hard coded as FALSE in v3 production code
+# updated names and code, and added dev option for renamed impute_human_missing_districts, default = FALSE
+# DEV This looks like it samples existing districts as data for the missing districts.
+#     I can't think of a time where this would be wanted. May be able to delete in future. [DMN]
+if (!is.null(params$dev_settings$impute_human_missing_districts)){
+  #use param given
+  impute_human_missing_districts <- params$dev_settings$impute_human_missing_districts
+} else {
+  #should stay FALSE unless you are very sure
+  impute_human_missing_districts <- FALSE
+}
+
+#Important references
+#https://stackoverflow.com/questions/25407102/conditionally-display-a-block-of-text-in-r-markdown/46686678#46686678
+#https://stackoverflow.com/questions/25240541/how-to-add-newpage-in-rmarkdown-in-a-smart-way
+#https://stackoverflow.com/questions/25849814/rstudio-rmarkdown-both-portrait-and-landscape-layout-in-a-single-pdf
+#https://bookdown.org/yihui/rmarkdown-cookbook/child-document.html
+#https://yihui.org/knitr/
+
+
+```
+
+```{r data_load, echo=FALSE, include=FALSE, cache=FALSE}
+#Loads data from file locations given in parameters
+#Note: does NOT do any data checks
+
+if (is.null(data_human)){
+  data_human <- readr::read_csv(params$file_human, 
+                                show_col_types = FALSE)
+}
+
+if (is.null(data_mosquito)){
+  data_mosquito <- readr::read_csv(params$file_mosquito, 
+                                   show_col_types = FALSE)
+}
+
+if (is.null(data_strata)){
+  #if given a strata file, which is optional
+  if (!params$file_strata == ""){
+    data_strata <- readr::read_csv(params$file_strata, 
+                                   show_col_types = FALSE)
+  }
+}
+
+if (is.null(data_sf)){
+  
+  if (params$file_county_sf == "create"){
+    #if user set to "create" then we will download tigris shapefile and save for future use
+    #download tigris, internet required
+    data_sf <- tigris::counties(state = params$state_code, cb = TRUE)
+    #save out for use next time
+    #make folder if does not exist (if exists, just shows warning, suppressed)
+    dir.create("data_spatial", showWarnings = FALSE)
+    saveRDS(data_sf, file.path("data_spatial", paste0(params$state_code, "_counties.RDS")))
+  } else if (params$file_county_sf == "always_download"){
+    #if "always_download" then we will download tigris shapefile each time (no save), internet required
+    data_sf <- tigris::counties(state = params$state_code, cb = TRUE)
+  } else {
+    #read in file from params
+    data_sf <- readRDS(params$file_county_sf)
+  }
+}#end is.null
+
+
+if (is.null(model_formulas)){
+  models_raw <- readr::read_csv(params$file_models, 
+                                col_names = FALSE, show_col_types = FALSE, 
+                                quote = "\"")
+  #create named list from tbl
+  model_formulas <- models_raw %>% 
+    dplyr::pull(2, name = 1)
+  #just the model names for later use
+  model_names <- names(model_formulas)
+}
+
+# Weather data
+# Raw read in with prep for taking most recent value for day
+# See data_weather_latest block for that processing
+
+if (is.null(data_env_raw)){
+  # Reading in of data & file modified time
+  #get list of csv files (NOT in subfolders)
+  env_csv_files_raw <- list.files(path = params$folder_weather, 
+                                  pattern="*.csv$",
+                                  full.names = TRUE, recursive = FALSE)
+  
+  #keep the names of only csv files that are not empty
+  #not likely relevant here, however does no harm to check
+  file_condition <- sapply(env_csv_files_raw, function(x) {length(readr::count_fields(x, readr::tokenizer_csv())) > 1})
+  env_csv_files <- env_csv_files_raw[file_condition]
+  
+  #read in all data files, and add the time the file was last modified
+  data_env_raw <- env_csv_files %>% 
+    lapply(function(x) {
+      readr::read_csv(x, show_col_types = FALSE) %>% 
+        #add last modified time
+        dplyr::mutate(file_time = file.info(x)$mtime)}) %>% 
+    #bind list items into one dataset
+    dplyr::bind_rows()
+}
+
+
+#Record row count of data as read in
+dx_mosq_nrow_0load <- nrow(data_mosquito)
+dx_human_nrow_0load <- nrow(data_human)
+dx_env_nrow_0load <- nrow(data_env_raw) #note PRE de-duplication
+
+
+```
+
+```{r map_dimensions_sizes, echo=FALSE, include=FALSE, cache=FALSE}
+
+#Because this can be run for any state, 
+# different states have different dimensions 
+# and some are wider than tall and vice versa
+# Calculating where reference map will be rotated, and 
+# appropriate maps sizes
+
+#determine if spatial data is wider than it is tall
+sf_box_dist <- data_sf %>% 
+  #get bounding box with xmin, xmax, ymin, ymax
+  sf::st_bbox() %>% 
+  #convert into sfc object
+  sf::st_as_sfc() %>%
+  #to turn into points
+  sf::st_cast("POINT") %>% 
+  #calculate all distances between points
+  sf::st_distance()
+#points:
+#1: xmin, ymin,
+#2: xmax, ymin
+#3: xmax, ymax
+#4: xmin, ymax
+#5: point 1
+# Want distance xmin to xmax, so can use distance between pts 1 & 2
+# Want distance ymin to ymax, so can use distance between pts 1 & 4
+#TRUE if wider (x distance > y distance), to be used with dynamic sizing/page orientation  
+sf_wider <- sf_box_dist[1,2] > sf_box_dist[1,4]
+# apparently can't use ! in knitr headers, so making separate object for inverse
+sf_taller <- !sf_wider
+
+#aspect ratio is height/width
+sf_asp_ratio <- sf_box_dist[1,4] / sf_box_dist[1,2]
+
+#calculate width of reference map
+# which will either be on a landscape or portrait page
+# assuming US letter size paper
+ref_map_width <- if (sf_wider){10} else {7}
+ref_map_height <- ref_map_width * sf_asp_ratio #note returns units obj not numeric
+#however, if the calc height is too tall to most likely fit on the page, recalculate
+max_height_portrait <-  7
+max_height_landscape <- 5
+if (sf_taller & 
+    ref_map_height > units::as_units(max_height_portrait)){
+  ref_map_height <- max_height_portrait
+  ref_map_width <- ref_map_height / sf_asp_ratio
+} else if (sf_wider & 
+           ref_map_height > units::as_units(max_height_landscape)){
+  ref_map_height <- max_height_landscape
+  ref_map_width <- ref_map_height / sf_asp_ratio
+}
+
+```
+
+```{r data_id_fields, echo=FALSE, include=FALSE, cache=FALSE} 
+
+#ID fields:
+# If FIPS field is in all, will use fips (FULL 5 character version)
+# Else use original county/district name matching
+# Accepted field names here, there will be preferred, 
+# but this gives some flexibility 
+# Processing happens after read in, will create "arbo_ID" used afterwards
+# Processing includes wrangling fips to match across all files
+# Each list in DESCENDING order of priority
+#   will only take the field that appears first
+field_fips_accepted <- c("fips", "FIPS", "fips_code", "FIPS_CODE")
+field_names_accepted <- c("county", "district", "parish", "Parish")
+
+
+#ID Functions
+confirm_id_fields <- function(fld_vector){
+  #Does any of the accepted fields (of a particular type)
+  # exist in all 3 or 4 datasets
+  # strata is OPTIONAL
+  
+  if (!is.null(data_strata)){
+    #4 datasets
+    
+    my_count <- sum(
+      any(fld_vector %in% names(data_human)),
+      any(fld_vector %in% names(data_mosquito)),
+      any(fld_vector %in% names(data_env_raw)),
+      any(fld_vector %in% names(data_strata))
+    )
+    
+    #true/false
+    use_fld <- my_count == 4L
+    
+  } else {
+    #3 datasets
+    
+    my_count <- sum(
+      any(fld_vector %in% names(data_human)),
+      any(fld_vector %in% names(data_mosquito)),
+      any(fld_vector %in% names(data_env_raw))
+    )
+    
+    #true/false
+    use_fld <- my_count == 3L
+    
+  }
+  
+  return(use_fld)
+  
+} 
+
+create_id_field <- function(my_tbl, fld_vector){
+  #the field names in the dataset that match the accepted names
+  # [[1]] takes the first
+  field_to_copy <- intersect(fld_vector, names(my_tbl))[[1]]
+  
+  updated_tbl <- my_tbl %>% 
+    #slight weirdness with dynamic field name in tidyverse
+    #using glue {{}}
+    #dplyr::mutate(arbo_ID = {{field_to_copy}})
+    #glue solution stopped working 2022-03-14? unknown reasons but only RHS
+    #using pseudo-base solution instead
+    dplyr::mutate(arbo_ID = .data[[field_to_copy]])
+}
+
+standarize_fips <- function(my_tbl, fips_vector = field_fips_accepted){
+  
+  # Create new field arbo_ID which will be used for matching now on
+  arbo_tbl <- create_id_field(my_tbl, fips_vector)
+  
+  # FIPS codes, while use numbers, should be considered text/string
+  #   e.g. numerical math is meaningless
+  
+  #1. convert to character
+  #2. convert to standard 5 character (2 state + 3 county) format
+  # if length 5, good
+  # if length 4, then full but probably read in as number and state has leading 0
+  #   -> pad 0 in front
+  # if length 3 -> add state code
+  # if length 2, then county code but read as number and county has leading 0
+  #    -> pad 0 in front to 3, and add state code
+  
+  #grab state fips code from shp, as string
+  state_fips <- data_sf$STATEFP %>% unique() %>% as.character()
+
+  #attempt to handle possible read-ins and formats of fips codes in user data
+  arbo_tbl <- arbo_tbl %>% 
+    dplyr::mutate(arbo_ID = as.character(arbo_ID),
+                  arbo_ID = dplyr::case_when(
+                    stringr::str_length(arbo_ID) == 4 ~ stringr::str_pad(arbo_ID, width = 5, 
+                                                                         side = "left", pad = "0"),
+                    stringr::str_length(arbo_ID) == 3 ~ paste0(.env$state_fips, arbo_ID),
+                    stringr::str_length(arbo_ID) == 2 ~ paste0(.env$state_fips,
+                                                               stringr::str_pad(arbo_ID, width = 3, 
+                                                                          side = "left", pad = "0")),
+                    TRUE ~ arbo_ID))
+  
+  return(arbo_tbl)
+}
+
+simplifynames <- function(priornames=NULL) {
+  
+  #ORIGINAL name matching 
+  
+  # convert to lower case
+  priornames <- tolower(priornames)
+  
+  # remove spaces
+  priornames <- gsub(pattern=" ", replacement="", x=priornames, fixed=TRUE)
+  
+  # remove other offending placename modifiers
+  priornames <- gsub(pattern="county", replacement="", x=priornames, fixed=TRUE)
+  priornames <- gsub(pattern="parish", replacement="", x=priornames, fixed=TRUE)
+  priornames <- gsub(pattern="par.", replacement="", x=priornames, fixed=TRUE)
+  priornames <- gsub(pattern="(zone)", replacement="", x=priornames, fixed=TRUE)
+  priornames <- gsub(pattern="lower", replacement="", x=priornames, fixed=TRUE)
+  priornames <- gsub(pattern="upper", replacement="", x=priornames, fixed=TRUE)
+  priornames <- gsub(pattern="southern", replacement="", x=priornames, fixed=TRUE)
+  priornames <- gsub(pattern="northern", replacement="", x=priornames, fixed=TRUE)
+  priornames <- gsub(pattern="saint", replacement="", x=priornames, fixed=TRUE)
+  priornames <- gsub(pattern="st", replacement="", x=priornames, fixed=TRUE)
+  priornames <- gsub(pattern=".", replacement="", x=priornames, fixed=TRUE)
+  
+  # return names
+  return(priornames)
+  
+}
+
+
+standarize_names <- function(my_tbl, names_vector = field_names_accepted){
+  
+  #Create new field arbo_ID which will be used for matching now on
+  arbo_tbl <- create_id_field(my_tbl, names_vector)
+  
+  #Use original name simplification
+  arbo_tbl <- arbo_tbl %>% 
+    dplyr::mutate(arbo_ID = simplifynames(arbo_ID))
+}
+
+
+
+# Set up arbo_ID 
+if (confirm_id_fields(field_fips_accepted)){
+  # use fips as arbo_ID
+  
+  id_as_fips <- TRUE
+  id_as_names <- FALSE
+  
+  data_human <- standarize_fips(data_human)
+  data_mosquito <- standarize_fips(data_mosquito)
+  data_env_raw <- standarize_fips(data_env_raw)
+  
+  if (!is.null(data_strata)){
+    data_strata <- standarize_fips(data_strata)
+  }
+  
+  #  data_sf will be dealt with separately, as it is standard format
+  #census shape: GEOID is 5 char FIPS code
+  data_sf <- data_sf %>% 
+    dplyr::mutate(arbo_ID = GEOID)
+  
+} else if (confirm_id_fields(field_names_accepted)){
+  # use county names as arbo_ID
+  
+  id_as_fips <- FALSE
+  id_as_names <- TRUE
+  
+  data_human <- standarize_names(data_human)
+  data_mosquito <- standarize_names(data_mosquito)
+  data_env_raw <- standarize_names(data_env_raw)
+  
+  if (!is.null(data_strata)){
+    data_strata <- standarize_names(data_strata)
+  }
+  
+  #  data_sf will be dealt with separately, as it is standard format
+  #census shape: NAME is county name
+  data_sf <- data_sf %>% 
+    dplyr::mutate(arbo_ID = simplifynames(NAME))
+  
+}#end arbo_ID setup
+
+#Create a crosswalk from arbo_ID to 'pretty' names (data_sf$NAME)
+id_crosswalk <- data_sf %>% 
+  sf::st_drop_geometry() %>% 
+  dplyr::select(NAME, GEOID, arbo_ID) %>% 
+  dplyr::rename(FIPS = GEOID)
+
+#If county highlights (dev), then set up proper IDs here
+if (highlight_flag){
+  
+  #using names, need to crosswalk from user given name to simplename arbo_ID
+  # user given names MUST match shapefile standard name (NAME)
+  if (id_as_names){
+    highlight_ids <- id_crosswalk$arbo_ID[match(highlight, id_crosswalk$NAME)]
+  } else {
+    #if using fips, use as is
+    highlight_ids <- highlight
+  }
+}
+
+```
+
+```{r data_dates, echo=FALSE, include=FALSE, cache=FALSE} 
+
+# Dates in data
+#   "date_obs" will become the standard date field name of the observed
+#   "date_epi" will become the standard date for modelling weeks (END date of epiweek)
+# Filtering on years given in parameters
+# Setting up week-related variables, in CDC epiweeks
+
+##Functions
+# epiwday borrowed from epidemiar, originally written by Chris Merkord, defaults changed here
+epiwday <- function(x, system = "CDC") {
+  week_type <- match.arg(system, c("ISO", "CDC"))
+  if (week_type == "ISO") {
+    as.integer(lubridate::wday(x - 1))
+  } else if (week_type == "CDC") {
+    as.integer(lubridate::wday(x))
+  }
+}
+# make_date_yw borrowed from epidemiar, originally written by Chris Merkord, defaults changed here
+make_date_yw <- function(year = 1970L, week = 1L, weekday = 7L, system = "CDC") {
+  #year: epidemiological year
+  #week: epidemiological week number (1--53).
+  #weekday: epidemiological weekday number (1--7). Day 1 is a Monday in
+  #   the ISO-8601 WHO system and a Sunday in the CDC system. DEFAULT is LAST day of week (7)
+  #system: String indicating the standard (WHO ISO-8601 or CDC epiweeks) ["ISO" or "CDC"]. 
+  week_type <- match.arg(system, c("ISO", "CDC"))
+  lengths <- vapply(list(year, week, weekday), length, 1, USE.NAMES = FALSE)
+  if (min(lengths) == 0L) as.Date(integer(), lubridate::origin)
+  # recycle arguments
+  N <- max(lengths)
+  y <- rep_len(as.integer(year), N)
+  w <- rep_len(as.integer(week), N)
+  d <- rep_len(as.integer(weekday), N)
+  
+  out <-
+    ifelse(
+      is.na(y) | is.na(w) | is.na(d), NA,
+      {
+        jan1 <- lubridate::make_date(y, 1, 1)
+        wday <- epiwday(jan1, week_type)
+        to_add <- ifelse(wday <= 4, 1, 8) - wday
+        wk1 <- jan1 + to_add
+        day1 <- wk1 + (w - 1) * 7
+        day1 + d - 1
+      }
+    )
+  as.Date(out, lubridate::origin)
+}
+# find last epiweek in a year: will be either 52 or 53
+get_last_epiweek <- function(year){
+  #first pass, get epiweek of Dec 31 of the year
+  dec31 <- as.Date(paste0(year, "-12-31"), "%Y-%m-%d")
+  dec31_epiweek <- lubridate::epiweek(dec31)
+  # Dec 31 might fall into 1st week of following year
+  if (dec31_epiweek == 1){
+    #if so, then get epiweek of the week prior instead
+    prev_epiweek <- lubridate::epiweek(dec31 - lubridate::weeks(1))
+    return(prev_epiweek)
+  } else {return(dec31_epiweek)}
+}
+
+# Note: tryCatch not helpful b/c of as.Date return values 
+# > as.Date("2019-6-4")
+# [1] "2019-06-04"
+# > as.Date("2019-6-4", "%m/%d/%Y")
+# [1] NA
+# > as.Date("6/4/2019")
+# [1] "0006-04-20"
+# also note that tryCatch doesn't work inside mutate plain
+# need rowwise or other solution to use that
+# So below solution is not quite as robust as it could be, 
+#  but it should be pretty good
+
+data_human <- data_human %>% 
+  #try old specified format first
+  #gives NA when given dates like "2019-6-4"
+  dplyr::mutate(date_obs = as.Date(date, format = "%m/%d/%Y"),
+                #test for NA and let as.Date guess this time
+                #MUST use ifelse, not if_else b/c that evaluates all
+                # and as.Date will throw error if given the old format without pattern
+                # however ifelse strips date format, so must cast it afterwards
+                # note: zoo package used for default origin for as.Date()
+                date_obs = as.Date(ifelse(is.na(date_obs), 
+                                          as.Date(date), 
+                                          date_obs)))
+
+data_mosquito <- data_mosquito %>% 
+  #try old specified format first
+  #gives NA when given dates like "2019-6-4"
+  dplyr::mutate(date_obs = as.Date(col_date, format = "%m/%d/%Y"),
+                #test for NA and let as.Date guess this time
+                #MUST use ifelse, not if_else b/c that evaluates all
+                # and as.Date will throw error if given the old format without pattern
+                # however ifelse strips date format, so must cast it afterwards
+                # note: zoo package used for default origin for as.Date()
+                date_obs = as.Date(ifelse(is.na(date_obs), 
+                                          as.Date(col_date), 
+                                          date_obs)))
+
+
+## Filter data by year parameters
+# More data may be present in the files than what we want to use 
+#   e.g. incomplete year data
+# Adds useful date parts as fields for use here and later
+# Note: Epi year is used for filtering for consistency with using epiweeks
+
+data_human <- data_human %>% 
+  #year field for filtering
+  dplyr::mutate(#epi year
+    year_epi = lubridate::epiyear(date_obs),
+    #epiweek
+    week_epi = lubridate::epiweek(date_obs),
+    date_epi = make_date_yw(year = year_epi, week = week_epi, weekday = 7),
+    #also doy
+    doy = lubridate::yday(date_obs)) %>% 
+  #filter year range from parameter input
+  dplyr::filter(year_epi >= params$year_human_start & 
+                  year_epi <= params$year_human_end)
+
+
+data_mosquito <- data_mosquito %>% 
+  #date fields for filtering (here and later in mosq modelling)
+  dplyr::mutate(year_cal = lubridate::year(date_obs),
+                #epi year and week
+                year_epi = lubridate::epiyear(date_obs),
+                week_epi = lubridate::epiweek(date_obs),
+                date_epi = make_date_yw(year = year_epi, 
+                                        week = week_epi, 
+                                        weekday = 7),
+                #also doy, used later in mosq modelling
+                doy = lubridate::yday(date_obs)) %>% 
+  #filter year range from parameter input
+  dplyr::filter(year_epi >= params$year_mosquito_start & 
+                  year_epi <= params$year_mosquito_end) 
+#Note: doy filtering happens in code block data_mosq_processing_dx below
+
+
+data_env_raw <- data_env_raw %>% 
+  #filter year range from parameter input
+  #already has year field from GEE, however
+  # will ALSO have epi year
+  dplyr::mutate(date_obs = as.Date(paste(year, doy, sep = "-"),
+                                   "%Y-%j"),
+                #epi year and week
+                year_epi = lubridate::epiyear(date_obs),
+                week_epi = lubridate::epiweek(date_obs),
+                date_epi = make_date_yw(year = year_epi, 
+                                        week = week_epi, 
+                                        weekday = 7)) %>%  
+  dplyr::filter(year_epi >= params$year_weather_start & 
+                  year_epi <= params$year_weather_end) 
+
+
+## Dates for forecasts and functions
+# Now using CDC epiweeks (MMWR week) 
+# The date associated with the epiweek will be the LAST day of the epiweek
+
+#Forecast week
+#week of forecast, given by user
+date_request <- as.Date(params$forecast_date, "%Y-%m-%d")
+#epi week of requested date
+epiweek_request <- lubridate::epiweek(date_request)
+#epi year of requested date
+epiyear_request <- lubridate::epiyear(date_request)
+#ENDING date of the requested epi week
+date_epiweek_request <- make_date_yw(year = epiyear_request, 
+                                     week = epiweek_request, 
+                                     weekday = 7)
+#day of year of the ending date of the requested epiweek
+doy_dt_epiwk_req <- lubridate::yday(date_epiweek_request)
+
+#Modelling years
+# Used to be separate parameter, but is really driven by other inputs
+# To avoid confusion and mismatches years in strange ways,
+#  now being set internally
+# Start year is the same of the start of human data. 
+#  Can't model before human data, and to move modelling start, change start of human data
+year_modeling_start <- params$year_human_start 
+# End year is the year of the forecast date
+year_modeling_end <- epiyear_request
+
+#Various other dates
+#ending date of the FIRST epiweek in the MIN modelling year
+date_min_model <- make_date_yw(year = year_modeling_start,
+                               week = 1,
+                               weekday = 7)
+#ending date of LAST epiweek in the MAX modelling year
+date_max_model <- make_date_yw(year = year_modeling_end,
+                               week = get_last_epiweek(year_modeling_end), #could be 52 or 53
+                               weekday = 7)
+
+```
+
+```{r data_human_processing_dx, echo=FALSE, include=FALSE, cache=FALSE} 
+## Human
+
+#Record row count (in human_year_start through human_year_end)
+data_human_range <- data_human
+dx_human_nrow_1range <- nrow(data_human_range)
+
+#Clean human data
+# remove any with unmatched county info
+#   especially necessary for doing regression modeling
+data_human <- data_human %>% 
+  dplyr::filter(arbo_ID %in% unique(data_sf$arbo_ID),
+                #remove any without a good date
+                (!is.na(date_obs)))
+
+#Record row count post cleaning
+dx_human_nrow_2clean <- nrow(data_human)
+
+#any rows unmatched
+dx_human_unmatched <- data_human_range %>% 
+  #let it match columns on its own
+  dplyr::anti_join(data_human) %>% 
+  #file original date field to display in table
+  dplyr::select(arbo_ID, date)
+
+#gather list of counties in cleaned human data
+dx_human_counties <- data_human %>% 
+  dplyr::pull(arbo_ID) %>% unique() %>% sort()
+
+#min/max years of data actually PRESENT in the cleaned input data 
+# (within the user-supplied range of years to use in modeling)
+# If set up normally, these should align, but it is not necessarily true
+human_exists_yr_min <- min(data_human$year_epi, na.rm = TRUE)
+human_exists_yr_max <- max(data_human$year_epi, na.rm = TRUE)
+human_exists_yr_list <- data_human$year_epi %>% unique() %>% sort()
+#are there years between requested start/end years that no data were observed for? 
+#NOTE: These may be zero-case years! (and therefore fine). Or potentially missing data. 
+human_yrs_missing <- setdiff(params$year_human_start:params$year_human_end,
+                             human_exists_yr_list)
+
+
+#[V3] [DEV] imputemissingdistricts was hard coded as FALSE in v3 production code
+# updated names and code, and added dev option for renamed impute_human_missing_districts, default = FALSE
+# [DEV] This looks like it samples existing districts as data for the missing districts.
+#     I can't think of a time where this would be wanted. May be able to delete in future. [DMN]
+if (impute_human_missing_districts){
+  #list of districts in that state that are missing from human data
+  districts_missing <- data_sf$arbo_ID[!(data_sf$arbo_ID %in% dx_human_districts)]
+  #create random rows to fill in one observation for each missing district
+  # by pulling a sampled row from the observed human data (for a different district) 
+  sample_rows <- data_human %>% 
+    dplyr::filter(row_number() %in% sample(x = 1:nrow(data_human),
+                                           size = length(districts_missing),
+                                           replace = TRUE))
+  #pull only appropriate columns and make new tibble to add
+  data_human_imputed <- tibble::tibble(arbo_ID = districts_missing) %>% 
+    dplyr::bind_cols(sample_rows %>% 
+                       dplyr::select(date_obs, year_epi, week_epi, date_epi, doy)) 
+  #bind imputed data to existing data
+  data_human <- dplyr::bind_rows(data_human, data_human_imputed)
+  
+}
+```
+
+```{r data_mosq_processing_dx, echo=FALSE, include=FALSE, cache=FALSE} 
+
+## Mosquito
+# Cleaning, filtering, statistics for report
+
+#Record row count (in mosquito_year_start through mosquito_year_end)
+data_mosq_range <- data_mosquito
+dx_mosq_nrow_1range <- nrow(data_mosquito)
+
+#Clean mosq data
+# remove any with unmatched district info
+#   especially necessary for doing regression modeling
+#   Not original done in [V3] for simpleratio or AUC, 
+#   but it makes sense to be consistent here. 
+data_mosquito <- data_mosquito %>% 
+  dplyr::filter(arbo_ID %in% unique(data_sf$arbo_ID),
+                #remove any with NAs in wnv_result or doy
+                #both are needed in regression modeling
+                #doy (and rest of date-related fields) would be na is date_obs was na
+                (!is.na(wnv_result)),
+                (!is.na(date_obs)))
+
+#any rows unmatched
+dx_mosq_unmatched <- data_mosq_range %>% 
+  #let it match columns on its own
+  dplyr::anti_join(data_mosquito) %>% 
+  #file original date field to display in table
+  dplyr::select(arbo_ID, col_date)
+
+#Record row count post cleaning
+dx_mosq_nrow_2clean <- nrow(data_mosquito)
+
+#Filter by mosquito range
+data_mosquito <- data_mosquito %>% 
+  #filter by doy
+  dplyr::filter(doy >= params$mosquito_doy_start &
+                  doy <= params$mosquito_doy_end)
+
+#Record row count post doy filtering
+dx_mosq_nrow_3filtered <- nrow(data_mosquito)
+
+#gather list of counties in mosquito data
+dx_mosq_counties <- data_mosquito %>% 
+  dplyr::pull(arbo_ID) %>% unique() %>% sort()
+
+#min/max years of data actually PRESENT in the input data 
+# (within the user-supplied range of years to use in modelling)
+# If set up normally, these should align, but it is not necessarily true
+mosq_exists_yr_min <- min(data_mosquito$year_epi, na.rm = TRUE)
+mosq_exists_yr_max <- max(data_mosquito$year_epi, na.rm = TRUE)
+mosq_exists_yr_list <- data_mosquito$year_epi %>% unique() %>% sort()
+#are there years between requested start/end years that no data were observed for? 
+mosq_yrs_missing <- setdiff(params$year_mosquito_start:params$year_mosquito_end,
+                             mosq_exists_yr_list)
+
+#forecast year diagnostics and statistics for report text and debugging
+data_mosq_fcyr <- data_mosquito %>% 
+  dplyr::filter(year_epi == epiyear_request)
+#number rows of data in year
+dx_mosq_nrow_fcyr <- nrow(data_mosq_fcyr)
+#number of counties in year
+dx_mosq_counties_fcyr <- data_mosq_fcyr %>% 
+    dplyr::pull(arbo_ID) %>% unique() %>% length()
+#number of wnv positive pools in year
+mosq_pos_num_fcyr <- data_mosq_fcyr %>% 
+  dplyr::filter(wnv_result == 1) %>% 
+  nrow()
+#percent of pools positive in forecast year
+mosq_pos_perc_fcyr <- mosq_pos_num_fcyr / dx_mosq_nrow_fcyr * 100 %>% 
+  round(3)
+```
+
+```{r mosquito_infection_model, echo=FALSE, include=FALSE, cache=FALSE} 
+
+# Calculates mir_stat (mosquito infection rate), based on mosquito model
+#   Creates mosq_mir : 
+#   dataset with 'year_epi' and 'mir_stat's, (and 'strata' for stratified models)
+#   mir_stat_raw : calculated via pool MIR modelling
+#   mir_stat_ctr : post centering of above raw value
+#   mir_stat : NOT created in this block, but in mir imputation code block below.
+#             #if mir_impute, mir ~ total human cases, centered
+#             # else 0 (average risk) and exactfit
+
+
+# If match failure, default will be AUC
+# Note: If add a mosquito model, you MUST add it here
+if (params$mosquito_model %in% c(
+  "simpleratio", 
+  "AUC",
+  "MIGR",
+  "MII",
+  "stratifiedMIGR", 
+  "stratifiedMII")){
+  mosquito_model_clean <- params$mosquito_model
+} else {
+  #if unmatched, default MIGR
+  mosquito_model_clean <- "MIGR"
+}
+#list of non/stratified models for easier filtering
+mosq_nonstrat_models <- c("simpleratio", "AUC", "MIGR", "MII")
+mosq_strat_models <- c("stratifiedMIGR", "stratifiedMII")
+
+# Potentially multiple if blocks per model type, 
+#   depends on processing/calculations needed
+
+###
+#Primary set of calculation blocks, includes all model types
+if (mosquito_model_clean == "simpleratio") {
+  
+  mosq_mir <- data_mosquito %>% 
+    #total of positive pools, total pools, per year
+    dplyr::group_by(year_epi) %>% 
+    dplyr::summarise(tot_pos = sum(wnv_result, na.rm=TRUE),
+                     tot_test = n()) %>%
+    #simpleratio MIR is ratio of total positive pools over total pools tested
+    dplyr::mutate(mir_stat_raw = tot_pos / tot_test) %>% 
+    #select only year and summary stat for consistency
+    dplyr::select(year_epi, mir_stat_raw)
+  
+} #end if 'simpleratio'
+
+if (mosquito_model_clean == "AUC") {
+  
+  data_mosquito <- data_mosquito %>% 
+    # #remove rows with NA
+    # # [V3] [DEV] note: I'm assuming glmer is unhappy otherwise [DMN]
+    # dplyr::filter_at(vars(wnv_result, doy, year_epi),
+    #                  #all variables listed must be not NA
+    #                  all_vars(!is.na(.))) %>% 
+    # [V3] create a variable that at least has a little chance of being orthogonal to 1.
+    dplyr::mutate(dminus = doy - mean(.$doy, na.rm = TRUE),
+                  #factor year for modeling
+                  year_epi = factor(year_epi))
+  
+  #data frame for glmer
+  data_mosq_df <- data_mosquito %>% as.data.frame()
+  
+  # [V3] run a random effect model on orthogonalized data
+  mir_glm <- lme4::glmer(wnv_result ~ poly(dminus, 2) + (poly(dminus, 2)|year_epi),
+                         family = binomial(),
+                         data = data_mosq_df)
+  
+  # [V3] create a data frame to store the calculations for the aucs
+  pred_frame <- expand.grid(year_epi = unique(data_mosquito$year_epi),
+                            dminus = seq(from = min(data_mosquito$dminus, na.rm=TRUE),
+                                         to = max(data_mosquito$dminus, na.rm=TRUE),
+                                         length.out = 100))
+  pred_frame$pred <- predict(mir_glm,
+                             newdata = pred_frame,
+                             type = "response")
+  
+  # calculate the AUCs
+  # [DEV] note: Appears to be the sum of the predictions from all dminus values per year [DMN]
+  mosq_mir <- pred_frame %>% 
+    dplyr::group_by(year_epi) %>% 
+    dplyr::summarise(mir_stat_raw = sum(pred, na.rm = TRUE)) %>% 
+    #make year numeric again (not factor)
+    dplyr::mutate(year_epi = as.numeric(as.character(year_epi)))
+  
+  #make year numeric again (not factor)
+  data_mosquito <- data_mosquito %>% 
+    dplyr::mutate(year_epi = as.numeric(as.character(year_epi)))
+  
+}
+
+if (mosquito_model_clean %in% c("MIGR", "MII")) {
+  
+  data_mosquito <- data_mosquito %>% 
+    # [v3] create a variable that at least has a little chance of being orthogonal to 1.
+    dplyr::mutate(dminus = doy - mean(.$doy, na.rm = TRUE),
+                  #factor year for modeling
+                  year_epi = factor(year_epi))
+  
+  #data frame for glmer
+  data_mosq_df <- data_mosquito %>% as.data.frame()
+  
+  
+  #[V3] run a random effect model on orthogonalized data
+  mir_glm <- lme4::glmer(wnv_result ~ 1 + dminus +
+                           (0+1|year_epi) +
+                           (0+dminus|year_epi),
+                         family = binomial(),
+                         data = data_mosq_df)
+  
+  ##[DEV] : present in [V3], but not used, probably old dev testing
+  #data_mosq_df$est <- predict(data_mosq_df, newdata=wnv, type="response")
+  #data_mosquito <- data_mosq_df %>% tibble::as_tibble()
+  
+  #make year numeric again (not factor)
+  data_mosquito <- data_mosquito %>% 
+    dplyr::mutate(year_epi = as.numeric(as.character(year_epi))) 
+  
+  
+  if (mosquito_model_clean == "MIGR") {
+    
+    #[V3] predict random effects for all years
+    mosq_mir <- tibble(year_epi = rownames(nlme::random.effects(mir_glm)$year_epi) %>% 
+                         as.numeric(),
+                       #[,1] are intercept values [DMN]
+                       mir_stat_raw = nlme::random.effects(mir_glm)$year_epi[,1]) 
+    
+    
+  }
+  if (mosquito_model_clean == "MII") {
+    
+    #[V3] predict random effects for all years
+    mosq_mir <- tibble(year_epi = rownames(nlme::random.effects(mir_glm)$year_epi) %>%
+                         as.numeric(),
+                       #[,2] are dminus values [DMN]
+                       mir_stat_raw = nlme::random.effects(mir_glm)$year_epi[,2]) 
+    
+  }
+  
+} #end if c("MIGR", "MII")
+
+if (mosquito_model_clean %in% mosq_strat_models) {
+  
+  #add strata information to mosquito data
+  data_mosquito <- data_mosquito %>% 
+    dplyr::left_join(data_strata %>% 
+                       select(arbo_ID, strata),
+                     by = "arbo_ID") %>%
+    #make sure all have a strata
+    dplyr::filter(!is.na(strata)) %>% 
+    # [v3] create a variable that at least has a little chance of being orthogonal to 1.
+    dplyr::mutate(dminus = doy - mean(.$doy, na.rm = TRUE),
+                  #create a stratum per year factor for regression
+                  stratum_year = paste(strata, year_epi, sep = "_") %>% 
+                    factor())
+  
+  #data frame for glmer
+  data_mosq_df <- data_mosquito %>% as.data.frame()
+  
+  
+  #[V3] run a random effect model on orthogonalized data
+  mir_glm <- lme4::glmer(wnv_result ~ 1 + dminus +
+                           (0+1|stratum_year) +
+                           (0+dminus|stratum_year),
+                         family = binomial(),
+                         data = data_mosq_df)
+  
+  ##[DEV] : present in [V3], but not used, probably old dev testing
+  #data_mosq_df$est <- predict(data_mosq_df, newdata=wnv, type="response")
+  #data_mosquito <- data_mosq_df %>% tibble::as_tibble()
+  
+  if (mosquito_model_clean == "stratifiedMIGR") {
+    
+    #[V3] predict random effects for all years
+    mosq_mir <- tibble(stratum_year = rownames(nlme::random.effects(mir_glm)$stratum_year),
+                       #[,1] seems to pull the intercept values [DMN]
+                       mir_stat_raw = nlme::random.effects(mir_glm)$stratum_year[,1]) %>% 
+      #split stratum and year back out
+      dplyr::mutate(year_epi = stringr::str_split_fixed(stratum_year, "_", n = 2)[,2],
+                    strata = stringr::str_split_fixed(stratum_year, "_", n = 2)[,1],
+                    #convert year back to numeric
+                    year_epi = as.numeric(year_epi),
+                    #need to convert strata back to whatever data type as in data_strata
+                    #    in example is dbl for '101', etc. But could conceivably be numeric or string
+                    strata = as(strata, class(data_strata$strata))) %>% 
+      #drop old field
+      dplyr::select(-stratum_year)
+    
+  }
+  if (mosquito_model_clean == "stratifiedMII") {
+    
+    #[V3] predict random effects for all years
+    mosq_mir <- tibble(stratum_year = rownames(nlme::random.effects(mir_glm)$stratum_year),
+                       #[,2] seems to pull the dminus values [DMN]
+                       mir_stat_raw = nlme::random.effects(mir_glm)$stratum_year[,2]) %>% 
+      #split stratum and year back out
+      dplyr::mutate(year_epi = stringr::str_split_fixed(stratum_year, "_", n = 2)[,2],
+                    strata = stringr::str_split_fixed(stratum_year, "_", n = 2)[,1],
+                    #convert year back to numeric
+                    year_epi = as.numeric(year_epi),
+                    #need to convert strata back to whatever data type as in data_strata
+                    #    in example is dbl for '101', etc. But could conceivably be numeric or string
+                    strata = as(strata, class(data_strata$strata))) %>% 
+      #drop old field
+      dplyr::select(-stratum_year)
+    
+  }
+  
+} #end if c("stratifiedMIGR", "stratifiedMII")
+
+
+```
+
+
+```{r mir_imputation, echo=FALSE, include=FALSE, cache=FALSE} 
+
+# There are two choices for how to handle forecast modeling with missing mosquito data
+# 1. [V3] "Exactfit": MIR is imputed as 0 (average risk) and an exactfit binary term
+#     is added to the formula and modeling. mir_exactfit = TRUE 
+# 2. [V4.3+experiment] "MIR-human model": The known MIR values are modeled against total human cases
+#     (linear regression, by year). NO exactfit terms are used. mir_exactfit = FALSE. New default!
+
+#mir_full$mir_stat is the final MIR statistic, with imputation as necessary
+
+#create full table of year or year-strata needed, join with known. 
+if (mosquito_model_clean %in% mosq_nonstrat_models){
+  
+  #for NON-stratified mosq models
+      
+  #all years
+    mir_full <- tidyr::expand_grid(year_epi = year_modeling_start:year_modeling_end) %>% 
+      #join with existing/known MIR values
+      dplyr::left_join(mosq_mir, by = c("year_epi")) %>% 
+      #flag NAs as imputed
+      dplyr::mutate(mir_imputed = is.na(mir_stat_raw))
+
+
+  } else if (mosquito_model_clean %in% mosq_strat_models){
+  
+    #for stratified mosq models
+    
+    #all strata and all years
+    mir_full <- tidyr::expand_grid(strata = data_strata %>% 
+                                     dplyr::pull(strata) %>% 
+                                     unique() %>% sort(),
+                                   year_epi = year_modeling_start:year_modeling_end) %>% 
+      #join with existing/known MIR values
+      dplyr::left_join(mosq_mir, by = c("strata", "year_epi")) %>% 
+      #flag NAs as imputed
+      dplyr::mutate(mir_imputed = is.na(mir_stat_raw))
+      
+  } # end creating mir_full 
+
+
+
+if (mir_exactfit){
+  
+  # Center the MIR statistic 
+  # [V3] Originally done in the plotting code. 
+  #  Had been carried through to modeling in some mosquito models, but not all. 
+  #  Decision with MCW to standardize to all mosq models, so done here. [DMN]
+ mir_full <- mir_full %>% 
+    dplyr::mutate(mir_stat_ctr = mir_stat_raw - mean(.$mir_stat_raw, na.rm = TRUE),
+                  #and impute missing as 0, average risk
+                  mir_stat = dplyr::if_else(mir_imputed, 0, mir_stat_ctr))
+ 
+ # If mir_stat has been imputed, then doing exactfit
+ # but ONLY if within human years data 
+ # (otherwise doing an exactfit of ... 0)
+ # e.g. if there is no mosquito data yet for forecast year, this is NOT what we want
+ #   Add appropriate exactfit columns here
+ 
+ yrs_mir_imputed <- mir_full %>% 
+   dplyr::filter(mir_imputed == TRUE,
+                 year_epi >= params$year_human_start &
+                   year_epi <= params$year_human_end) %>% 
+   dplyr::pull(year_epi) %>% unique() %>% sort(decreasing = TRUE)
+ 
+ #loop over these years to add a column for each year
+ # that flags if it will be an exactfit
+ for (this_yr in yrs_mir_imputed){
+   
+   this_col_name <- paste0("exactfit_", this_yr)
+   
+   mir_full <- mir_full %>% 
+     #slight weirdness for dynamic field name on left-hand side (tidyverse)
+     #using glue {{}} with := assignment operator
+     #https://stackoverflow.com/questions/26003574/use-dynamic-name-for-new-column-variable-in-dplyr
+     #1 * logical returns 1 (true), 0 (false) [V3] 
+     #   Uncertain if this is necessary over T/F, kept as in [V3] [DMN]
+     dplyr::mutate({{this_col_name}} := 1 * (year_epi == this_yr))
+   
+ }
+ 
+
+  #end mir exactfit
+} else {
+  
+  # MIR-human model to impute missing MIR values
+  
+  
+  if (mosquito_model_clean %in% mosq_nonstrat_models){
+    
+    #for NON-stratified mosq models
+    
+    #predictor: total human cases for year
+    human_total <- data_human %>% 
+      dplyr::group_by(year_epi) %>% 
+      dplyr::summarise(tot_cases = n(),
+                       .groups = "drop")
+    
+    # create model 
+    mosq_human <- mir_full %>% 
+      dplyr::left_join(human_total, 
+                       by = c("year_epi")) %>% 
+      as.data.frame()
+
+    mh_lm <- lm(mir_stat_raw ~ tot_cases,
+                data = mosq_human,
+                #drop when no human data known as in forecast year, or mir missing
+                na.action = na.omit)
+    
+    # predict and replace missing
+    #   NOT forecast year (no human cases)
+    mh_fill <- mosq_human %>% 
+      as_tibble() %>% 
+      dplyr::filter(!is.na(tot_cases)) %>% 
+      as.data.frame()
+    
+    mh_fill$pred <- predict(mh_lm, 
+                            newdata = mh_fill,
+                            type = "response")
+    
+    # ggplot(mh_fill) + geom_point(aes(x = pred, y = mir_stat_raw)) + 
+    #   coord_fixed(xlim = c(min(mh_fill$mir_stat_raw, na.rm = TRUE), max(mh_fill$mir_stat_raw, na.rm = TRUE))) + theme_bw()
+    
+    mir_full <- mir_full %>% 
+      dplyr::left_join(mh_fill %>% 
+                         as_tibble() %>% 
+                         dplyr::select(year_epi, pred),
+                       by = c("year_epi")) %>% 
+      #replace
+      dplyr::mutate(mir_stat_imp = dplyr::if_else(mir_imputed, 
+                                              pred,
+                                              mir_stat_raw)) %>% 
+      # center
+      dplyr::mutate(mir_stat_ctr = mir_stat_imp - mean(.$mir_stat_imp, na.rm = TRUE)) %>% 
+      # IF no mosquito data for forecast year
+      # since cannot model against human cases
+      # impute with 0 (average risk)
+      dplyr::mutate(mir_stat = if_else(is.na(mir_stat_ctr), 0, mir_stat_ctr))
+    
+    
+  } else if (mosquito_model_clean %in% mosq_strat_models){
+    
+    #for stratified mosq models
+    
+    #predictor: total human cases for year
+    human_total <- data_human %>% 
+      #add strata
+      dplyr::left_join(data_strata %>% 
+                         dplyr::select(arbo_ID, strata),
+                       by = "arbo_ID") %>% 
+      dplyr::group_by(year_epi, strata) %>% 
+      dplyr::summarise(tot_cases = n(),
+                       .groups = "drop")
+    
+    # create model 
+    mosq_human <- mir_full %>% 
+      dplyr::left_join(human_total, 
+                       by = c("strata", "year_epi")) %>% 
+      #make sure strata doesn't get made into a number in model
+      dplyr::mutate(strata = as.factor(strata)) %>% 
+      as.data.frame()
+
+    mh_lm <- lm(mir_stat_raw ~ tot_cases * strata,
+                data = mosq_human,
+                #drop when no human data known as in forecast year, or mir missing
+                na.action = na.omit)
+    
+    # predict and replace missing
+    #   NOT forecast year (no human cases)
+    mh_fill <- mosq_human %>% 
+      as_tibble() %>% 
+      dplyr::filter(!is.na(tot_cases)) %>% 
+      as.data.frame()
+    
+    mh_fill$pred <- predict(mh_lm, 
+                            newdata = mh_fill,
+                            type = "response")
+    
+    # ggplot(mh_fill) + geom_point(aes(x = pred, y = mir_stat_raw)) + 
+    #   coord_fixed(xlim = c(min(mh_fill$mir_stat_raw, na.rm = TRUE), max(mh_fill$mir_stat_raw, na.rm = TRUE))) + theme_bw()
+    
+    mir_full <- mir_full %>% 
+      dplyr::left_join(mh_fill %>% 
+                         as_tibble() %>% 
+                         #unfactor
+                         dplyr::mutate(strata = as.character(strata) %>% 
+                                         as(class(data_strata$strata))) %>% 
+                         dplyr::select(strata, year_epi, pred),
+                       by = c("strata", "year_epi")) %>% 
+      #replace
+      dplyr::mutate(mir_stat_imp = dplyr::if_else(mir_imputed, 
+                                              pred,
+                                              mir_stat_raw)) %>% 
+      # center
+      dplyr::mutate(mir_stat_ctr = mir_stat_imp - mean(.$mir_stat_imp, na.rm = TRUE)) %>% 
+      # IF no mosquito data for forecast year
+      # since cannot model against human cases
+      # impute with 0 (average risk)
+      dplyr::mutate(mir_stat = if_else(is.na(mir_stat_ctr), 0, mir_stat_ctr))
+    
+  }
+  
+  # For narrative
+  yrs_mir_imputed <- mir_full %>% 
+    dplyr::filter(mir_imputed == TRUE) %>% 
+    dplyr::pull(year_epi) %>% unique() %>% sort()
+
+  
+} # end MIR-human imputation
+
+# DEV output
+if (dev_write_output){
+  readr::write_csv(mir_full, file = file.path(out_folder, paste0(out_name_base, "_mir_full.csv")))
+}
+
+```
+
+```{r data_env_latest_history, echo=FALSE, include=FALSE, cache=FALSE} 
+
+#This block:
+# 1) cleaning and processing
+# 2) picks out latest values when have duplicate values for a particular day
+# 3) calculates a historical env dataset on doy
+
+#Record row count (in year_weather_start through year_weather_end)
+dx_env_nrow_1range <- nrow(data_env_raw)
+
+#Clean env data
+# remove any with unmatched county info
+#   especially necessary for doing regression modeling
+data_env_raw <- data_env_raw %>% 
+  dplyr::filter(arbo_ID %in% unique(data_sf$arbo_ID))
+
+#Record row count post cleaning, pre deduplication
+dx_env_nrow_2clean <- nrow(data_env_raw)
+
+# As we will likely have data from the same day in multiple files,
+# we want to take only the LATEST value
+# (post ID set up section to remove extraneous fields before processing)
+
+if (!is.null(params$dev_settings$data_weather)){
+    #deduplication does not happen on override data, no file time
+  data_env <- data_env_raw
+} else {
+  data_env <- data_env_raw %>% 
+    #trim env vars to just predictor vars (removing extra env data)
+    dplyr::select(arbo_ID, date_obs, year, year_epi, week_epi, date_epi, doy,
+                  file_time, 
+                  params$predictor_var1, params$predictor_var2) %>% 
+    # Group by county and date, 
+    dplyr::group_by(arbo_ID, date_obs) %>% 
+    # sort by modified time DESC, 
+    dplyr::arrange(desc(file_time)) %>% 
+    # slice(1) to get first/latest (or only if not duplicated)
+    dplyr::slice(1) %>% 
+    #drop file time
+    dplyr::select(-file_time) %>%
+    #ungroup to finish
+    dplyr::ungroup()
+}
+
+#Record row count post deduplication
+dx_env_nrow_3dedup <- nrow(data_env)
+
+#remove large and no longer needed raw dataset
+rm(data_env_raw)
+gc(verbose = FALSE)
+
+#Note: This does not check for missing days (IMPLICIT missing)
+# If adding, adapt code from function corral_environmental()
+#  in data_corrals.R in epidemia_runspace (internal repo, Github)
+# However, missing days are filled in during data combining 
+# Explicit missing in handled in the anomalized section, 
+#   these NAs are filled the weather model predicted values
+
+
+#min/max years of data actually PRESENT in the input data 
+# (within the user-supplied range of years to use in modeling)
+# If set up normally, these should align, but it is not necessarily true
+# Note use of CALENDAR year 
+env_exists_yr_min <- min(data_env$year, na.rm = TRUE)
+env_exists_yr_max <- max(data_env$year, na.rm = TRUE)
+env_exists_yr_list <- data_env$year %>% unique() %>% sort()
+#are there years between requested start/end years that no data were observed for? 
+#   pretty sure that the modeling will fail, but just for diagnostics
+#    potentially possible that gap filling will attempt to fill entire years [DMN]
+env_yrs_missing <- setdiff(params$year_weather_start:params$year_weather_end,
+                             env_exists_yr_list)
+
+###
+# Historical env dataset - by district
+# Creates a mean of the variables by day of year: "{variable name}_mean"
+# This is done BEFORE any type of data filling for missing values
+# [DMN] [V3] Note that in v3 the historical dataset was calculated after 
+#             imputation of explicit missing in known time range
+#             (which granted is no rows using gridmet data)
+# Note: Anomalized historical values are added after anomalization
+
+data_env_hx <- data_env %>%
+  dplyr::group_by(arbo_ID, doy) %>%
+  # [DMN] package glue's {{}} ('curly curly') 
+  # https://www.tidyverse.org/blog/2020/02/glue-strings-and-tidy-eval/
+  #       suddenly stopped working 2022-03-14. 
+  #       Using older !!rlang:sym() for now, at least 
+  # Basically, in tidyverse, we have to tell it 
+  #  to evaluate the variable that is the name of the variable
+  #  by using !!sym() (or {{}} if it worked), 
+  #  and if that's on the LHS, use := instead of =
+  dplyr::summarize(
+    !!rlang::sym(paste0(params$predictor_var1,
+                        "_mean")) := mean(!!rlang::sym(params$predictor_var1),
+                                          na.rm = TRUE),
+    !!rlang::sym(paste0(params$predictor_var2,
+                        "_mean")) := mean(!!rlang::sym(params$predictor_var2),
+                                          na.rm = TRUE),
+    # "{{params$predictor_var1}}_mean" := mean({{params$predictor_var1}},
+    #                                 na.rm = TRUE),
+    # "{{params$predictor_var2}}_mean" := mean({{params$predictor_var2}},
+    #                                 na.rm = TRUE),
+    .groups = "drop")
+
+```
+
+```{r data_env_anomalization, echo=FALSE, cache=FALSE, include=FALSE}
+
+# This section calculates:
+# bam model for anomalization
+#   generating predicted values 
+#   anomaly: observed - predicted
+#   Also fills in EXPLICIT missing env data in known period with predicted values
+# adds anomalized historical values to data_env_hx
+
+# Params format reminder/example: 
+#  predictor_var1: "tmeanc"
+#  predictor_var2: "vpd"
+
+#Note: field names here are dynamically created 
+#   based on user parameters for var1 and var2.
+#   Tidyverse programming is a little weird with that 
+#     (though the syntax is cleaner now than earlier versions).
+# HOWEVER, as we are dealing with dataframes (not tibbles) for bam anyway
+#   using base R and [V3] code
+
+#data frame for bam
+data_env_df <- data_env %>% 
+  #ID must be a factor for modeling
+  dplyr::mutate(arbo_ID = factor(arbo_ID)) %>% 
+  as.data.frame()
+
+#loop to do each variable
+for (v in c(params$predictor_var1, params$predictor_var2)) {
+  
+  #set up temp variable with known name (to use in bam call)
+  # will be overwritten each loop
+  data_env_df$this_var <- data_env_df[,v]
+  
+  #run a bam model with smooth on day of year (seasonal) and district
+  this_env_mod <- mgcv::bam(this_var ~ arbo_ID + s(doy, bs="cc", by=arbo_ID), 
+                            data = data_env_df, 
+                            discrete = TRUE)
+  
+  #predicted values
+  this_preds <- predict(this_env_mod, newdata = data_env_df)
+  
+  # any missing environmental data is filled in with predicted values [V3]
+  #   this means we are updating our data, so we will have to overwrite data_env 
+  #   note that this is POST env modeling, but PRE forecast modeling
+  data_env_df[is.na(data_env_df[,v]), v] <- this_preds[is.na(data_env_df[,v])]
+  
+  #anomaly calculations: deviance between observed and predicted
+  #   creating a dynamically generated name that is the name of the variable plus "_anom" 
+  data_env_df[, paste0(v, "_anom")] <- data_env_df[,v] - this_preds
+  # then should there be any NA values, they are given the value 0 instead
+  data_env_df[is.na(data_env_df[, paste0(v, "_anom")]), paste0(v, "_anom")] <- 0
+  
+}
+
+#clean up and updating data_env
+# changes were made of data_env_df that we need to keep
+#   anomalized variables, imputed values
+data_env <- data_env_df %>% 
+  #convert table to tibble
+  tibble::as_tibble() %>% 
+  #drop temporary variable
+  dplyr::select(-this_var)
+#remove temporary tables to avoid confusion
+rm(this_preds)
+rm(data_env_df)
+#remove large temporary bam model
+rm(this_env_mod)
+
+##
+# Historical data
+#add anomalized historical values
+var1_anom_name <- paste0(params$predictor_var1, "_anom")
+var2_anom_name <- paste0(params$predictor_var2, "_anom")
+data_env_anom_hx <- data_env %>%
+  dplyr::group_by(arbo_ID, doy) %>%
+  #dynamic fields: '{var}_anom_{stat}' 
+  #based on the dynamic anom fields: '{var}_anom'  
+  # package glue's {{}} ('curly curly') would have been preferable to !!sym
+  # e.g. {{params$predictor_var1}}, but stopped working unexpectedly [DMN]
+  # Basically, in tidyverse, we have to tell it 
+  #  to evaluate the variable that is the name of the variable
+  #  by using !!sym() (or {{}} if it worked), 
+  #  and if that's on the LHS, use := instead of =
+  summarize(
+    !!rlang::sym(paste0(var1_anom_name, 
+                        "_mean")) := mean(!!rlang::sym(var1_anom_name), 
+                                          na.rm = TRUE),
+    !!rlang::sym(paste0(var2_anom_name, 
+                        "_mean")) := mean(!!rlang::sym(var2_anom_name), 
+                                          na.rm = TRUE),
+    .groups = "drop")
+
+#join to hx dataset
+data_env_hx <- data_env_hx %>%
+  dplyr::left_join(data_env_anom_hx, 
+                   by = c("arbo_ID", "doy"))
+
+if (dev_write_output){
+  readr::write_csv(data_env_hx, file = file.path(out_folder, paste0(out_name_base, "_data_env_hx.csv")))
+}
+
+```
+
+```{r data_combine, echo=FALSE, include=FALSE, cache=FALSE} 
+
+# Human, mosq infection rate, and environmental data together
+#   creating full matrix in prep for forecast modeling
+
+# After creating frame based on human data, other data may need filling
+#   so additional processing/calculations happen in this block
+
+###
+## Human -------------------------------------------------------
+
+#determine the range (of weeks of year) we should include in modelling [V3]
+# this is based on the human case_trim_alpha parameter
+# this is removing outlier human cases that are very early or late in season [DMN]
+#find min&max weeks using the case_trim_alpha parameter
+human_wks_alpha <- quantile(data_human$week_epi, 
+                            probs = c(params$case_trim_alpha/2, 
+                                      1 - (params$case_trim_alpha/2)), na.rm = TRUE)
+human_wk_min <- human_wks_alpha[1]
+human_wk_max <- human_wks_alpha[2]
+
+
+#Create dataset that will become the complete combined data for modelling input
+#First, use human data (what we are predicting) to set start and end dates
+# need to ensure that the end week is the last week of the year of the requested forecast week, 
+#   so seq.Date is reverse chronological
+# note: no longer needed now that we are solidly on epiweeks, but doesn't impact anything so kept [DMN]
+weeks_model_list <- seq.Date(from = date_max_model, to = date_min_model, by = "-1 week")
+# Create a frame that has entries for all district for all weeks in modelling list
+data_combined_prep <- tidyr::expand_grid(arbo_ID = dx_human_counties,
+                                         date_epi = weeks_model_list) %>% 
+  #add useful and needed date-related fields
+  dplyr::mutate(#epi year
+    year_epi = lubridate::epiyear(date_epi),
+    #epiweek
+    week_epi = lubridate::epiweek(date_epi),
+    #also doy
+    doy = lubridate::yday(date_epi),
+    #create a flag if the week was in years between 
+    #  params year_human_start through year_human_end
+    observed = dplyr::if_else(year_epi >= params$year_human_start &
+                                year_epi <= params$year_human_end,
+                              TRUE,
+                              FALSE),
+    #create a flag if the week was within the trimmed alpha week range)
+    modeled = dplyr::if_else(week_epi >= human_wk_min &
+                               week_epi <= human_wk_max,
+                             TRUE,
+                             FALSE))
+
+#count the number of cases that occur in each week for each district
+#   note, if a district had no cases for that week, there will not be a row entry
+data_human_week <- data_human %>% 
+  dplyr::group_by(arbo_ID, year_epi, week_epi) %>% 
+  #each row is a case
+  dplyr::summarise(case_count = n(), .groups = "drop") %>% 
+  #binary if any cases happened in that week in that district
+  dplyr::mutate(any_cases = dplyr::if_else(case_count >= 1,
+                                           1, #yes, there was at least one case in this district-week 
+                                           0))
+
+#join, and fill 0s for any district-week that had no cases
+data_combined_prep <- data_combined_prep %>% 
+  dplyr::left_join(data_human_week, by = c("arbo_ID", "year_epi", "week_epi")) %>% 
+  dplyr::mutate(case_count = tidyr::replace_na(case_count, 0),
+                any_cases = tidyr::replace_na(any_cases, 0)) 
+
+
+## Human case stats for report text
+
+# Total number of cases over all counties over all time
+state_cases_total <- sum(data_combined_prep$case_count, na.rm=TRUE)
+state_any_cases_total  <- sum(data_combined_prep$any_cases, na.rm=TRUE)
+
+# What percentage of cases we'll likely have seen before the start of this week
+#   based on historical years
+# No human data should be here for current year
+
+cases_before_fc_wk <- data_combined_prep %>% 
+  dplyr::filter(week_epi < epiweek_request) %>% 
+  dplyr::pull(case_count) %>% 
+  sum(na.rm = TRUE)
+
+cases_perc_obs_hx <- 100 * (cases_before_fc_wk / state_cases_total) %>% round(2)
+
+
+## Mosquito MIR -------------------------------------------------------
+
+# mir_full is name of dataset from mosquito modeling with mir_stat
+# mir_stat : with imputation for missing entries
+#             (based on dev exact fit or default human case model)
+
+
+# Now, add our final mir_stat to the combined data set
+if (mosquito_model_clean %in% mosq_nonstrat_models){
+  
+  data_combined_prep <- data_combined_prep %>% 
+    #mir_stat same for every week and district within a year
+    dplyr::left_join(mir_full %>% 
+                       dplyr::select(year_epi, mir_stat), 
+                     by = "year_epi")
+  
+} else if (mosquito_model_clean %in% mosq_strat_models){
+  
+  data_combined_prep <- data_combined_prep %>% 
+    #join with data_strata to get strata
+    dplyr::left_join(data_strata %>% 
+                       select(arbo_ID, strata),
+                     by = "arbo_ID") %>% 
+    #mir_stat same for every week and district within a year
+    dplyr::left_join(mir_full %>% 
+                       dplyr::select(year_epi, strata, mir_stat), 
+                     by = c("year_epi", "strata"))
+  
+}
+
+
+if (dev_write_output){
+  readr::write_csv(data_combined_prep, file = file.path(out_folder, paste0(out_name_base, "_data_combined_prep_humanmosq.csv")))
+}
+
+## Environmental -------------------------------------------------------
+
+# fill in future and missing env data 
+# within known env period, the missing have been replaced 
+#   with bam predictions during anomalization 
+
+#sequence of dates for env data matrix 
+# Start date is lag length days before the start of the requested modeling start year
+env_mod_yr_jan1 <- as.Date(paste0(year_modeling_start, "-01-01"), 
+                           format = "%Y-%m-%d")
+#lag length days before modeling start
+env_mod_date_start <- env_mod_yr_jan1 - lubridate::days(params$lag_length)
+env_dates <- seq.Date(from = env_mod_date_start,
+                      to = as.Date(paste0(year_modeling_end, "-12-31"), 
+                                   format = "%Y-%m-%d"),
+                      by = 1)
+#create blank tbl with all dates and counties (counties that were present in env data)
+prep_env_filler <- tidyr::expand_grid(arbo_ID = data_env %>% 
+                                        dplyr::pull(arbo_ID) %>% 
+                                        unique() %>% sort(),
+                                      date_obs = env_dates) %>% 
+  dplyr::mutate(doy = as.numeric(format(date_obs, "%j")))
+
+
+# create a new env dataset to use for modelling
+#     could overwrite old one like [V3], but creating new since removing data [DMN]
+data_env_mod <- prep_env_filler %>% 
+  #get data that exists
+  dplyr::left_join(data_env %>% 
+                     # select only variables we are going to use
+                     #using contains gets both unanomalized and anomalized columns
+                     dplyr::select(arbo_ID,
+                                   date_obs,
+                                   tidyselect::contains(c(params$predictor_var1, 
+                                                          params$predictor_var2))),
+                   by = c("arbo_ID", "date_obs")) %>% 
+  #get historical values from hx table
+  dplyr::left_join(data_env_hx, by = c("arbo_ID", "doy")) 
+
+#check for missing days to report out
+env_missing_dates <- data_env_mod %>% 
+  #if any column is NA (we created the dataframe with all dates, so this is checking the variable columns)
+  dplyr::filter(dplyr::if_any(tidyr::everything(), is.na)) %>% 
+  #get unique dates
+  dplyr::select(date_obs) %>% 
+  dplyr::distinct() %>% 
+  #but only want dates up to the day before the date of forecast
+  dplyr::filter(date_obs < date_request) %>% 
+  #pull for vector
+  dplyr::pull() %>% sort()
+
+#replace any missing with reasonable values
+data_env_mod <- data_env_mod %>% 
+  #   raw values get mean of doy
+  #   anom values get 0 (no anomaly)
+  #creating HARD CODED field names for bam later
+  #interesting RHS syntax b/c of tidyverse
+  dplyr::mutate(
+    var1 = dplyr::if_else(
+      #predictor_var1 from the params
+      is.na(!!rlang::sym(params$predictor_var1)), 
+      #if NA, use doy mean value
+      !!rlang::sym(paste0(params$predictor_var1, "_mean")),
+      #else use what was there
+      !!rlang::sym(params$predictor_var1)),
+    var2 = dplyr::if_else(
+      #predictor_var2 from the params
+      is.na(!!rlang::sym(params$predictor_var2)), 
+      #if NA, use doy mean value
+      !!rlang::sym(paste0(params$predictor_var2, "_mean")),
+      #else use what was there
+      !!rlang::sym(params$predictor_var2)),
+    var1_anom = dplyr::if_else(
+      #anomaly of predictor_var1
+      is.na(!!rlang::sym(paste0(params$predictor_var1, "_anom"))), 
+      #if anom is NA, use 0 (no anomaly)
+      0,
+      #else use what was there
+      !!rlang::sym(paste0(params$predictor_var1, "_anom"))), 
+    var2_anom = dplyr::if_else(
+      #anomaly of predictor_var2
+      is.na(!!rlang::sym(paste0(params$predictor_var2, "_anom"))),
+      #if anom is NA, use 0 (no anomaly)
+      0,
+      #else use what was there
+      !!rlang::sym(paste0(params$predictor_var2, "_anom"))))
+
+
+# create the large lagged data frame
+data_env_lag <- tidyr::expand_grid(arbo_ID = data_env_mod %>% 
+                                     pull(arbo_ID) %>% unique(),
+                                   date_obs = data_env_mod %>% 
+                                     pull(date_obs) %>% unique(),
+                                   #lag column
+                                   lag = seq(from = 0, 
+                                             to = params$lag_length,
+                                             by = 1)) %>% 
+  #the date of the lag (week value minus 1 day, 2 days, 3 days, etc.)
+  dplyr::mutate(date_lag = date_obs - lag) %>% 
+  #join with data on the LAGGED date
+  dplyr::left_join(data_env_mod, 
+                   by = c("arbo_ID", 
+                          "date_lag" = "date_obs"))
+#[DEV] note: top part of data_env_lag will be many NAs, 
+# if we don't have env data prior to the start of the env data (year_weather_start)
+# Fine as long as running modeling (human start) year +1 of env data start 
+#   (or starting greater than lag length in same year)
+
+# clean up (often b/c of large data)
+rm(prep_env_filler)
+rm(data_env_mod)
+gc(verbose = FALSE)
+
+#turn into WIDE format
+data_env_lag <- data_env_lag %>% 
+  tidyr::pivot_wider(id_cols = c(arbo_ID, date_obs),
+                     names_from = lag,
+                     values_from = c(var1, var2, var1_anom, var2_anom))
+
+#add into combined dataset 
+# because we are going to have a column be a matrix, 
+# switching to data frame (as opposed to tibble) here
+# this is also necessary (data frame) for bam
+data_combined <- data_combined_prep %>% 
+  #adding data, here it will still be separate columns for each lag for each var
+  dplyr::left_join(data_env_lag,
+                   by = c("arbo_ID", "date_epi" = "date_obs")) %>% 
+  as.data.frame()
+
+#now convert into a nested matrices
+#pattern matching on the var prefix followed by the day lag number
+data_combined$var1 <- as.matrix(data_combined[, grep(x=colnames(data_combined),
+                                                     pattern="^var1_[0123456789]")])
+data_combined$var2 <- as.matrix(data_combined[, grep(x=colnames(data_combined),
+                                                     pattern="^var2_[0123456789]")])
+data_combined$var1_anom <- as.matrix(data_combined[, grep(x=colnames(data_combined),
+                                                          pattern="^var1_anom_[0123456789]")])
+data_combined$var2_anom <- as.matrix(data_combined[, grep(x=colnames(data_combined),
+                                                          pattern="^var2_anom_[0123456789]")])
+
+#now get rid of the many columns used to create the matrices
+data_combined[,grep(x = colnames(data_combined), 
+                    pattern="^var1_[0123456789]")] <- NULL
+data_combined[,grep(x = colnames(data_combined), 
+                    pattern="^var2_[0123456789]")] <- NULL
+data_combined[,grep(x = colnames(data_combined), 
+                    pattern="^var1_anom_[0123456789]")] <- NULL
+data_combined[,grep(x = colnames(data_combined), 
+                    pattern="^var2_anom_[0123456789]")] <- NULL
+
+#create a matrix for the lag
+#using var1 just as a frame
+data_combined$lag <- data_combined$var1
+#rename (though not necessary, just for clarity)
+colnames(data_combined$lag) <- gsub(x = colnames(data_combined$lag),
+                                    pattern = "var1",
+                                    replacement = "lag")
+#now rewrite values
+for (i in 1:ncol(data_combined$lag)){
+  #starting at 0, so i-1
+  data_combined$lag[, i] <- (i - 1)
+}
+
+#need terms for seasonally-varying distributed lag
+data_combined$doymat <- data_combined$lag
+data_combined$doymat[,] <- data_combined$doy #[V3] uncertain what this does [DMN]
+
+# clean up (often b/c of large data)
+rm(data_env_lag)
+rm(data_combined_prep)
+gc(verbose = FALSE)
+
+## Post-combining ---------------------------------------------------
+
+#store arbo_ID data type to unfactor later
+arbo_ID_class <- class(data_combined$arbo_ID)
+
+#ensure that arbo_ID is a factor (needed for bam)
+data_combined <- data_combined %>% 
+  dplyr::mutate(arbo_ID = factor(arbo_ID))
+
+```
+
+```{r forecast_modeling, echo=FALSE, include=FALSE, cache=FALSE}
+
+# This code block does the forecast modeling
+# Switches for if saving model objects
+
+#Function from plyr with no dplyr equivalent
+round_any <- function(x, accuracy, f = round){
+  f(x / accuracy) * accuracy
+}
+
+if (save_models){
+  #set up list to contain model objects (created cached models)
+  model_objs <- list()
+}
+
+#set up frame to collect evaluation statistics 
+# note that this is ALWAYS done, whether or not dev parameter is set
+# because a subset of these is in the report itself
+model_evals <- data.frame()
+
+# set up list to contain model plots
+# [DEV] this is the FIRST place plots are generated
+#       this is being done in the loop below because unless the
+#       models are being cached, they are not saved so generating 
+#       these plots after the loop would be impossible
+# These are used in the appendix section for estimated dependence functions
+model_plots <- list()
+
+# set up frame to capture predictions
+preds <- data.frame()
+
+# using list of models, run each one
+for (i in seq_along(model_names)){
+  
+  this_model <- model_names[[i]]
+  
+  ##
+  # formula set up
+  #
+  #get the formula
+  this_formula_raw <- model_formulas[this_model]
+  
+  #if doing exact fits
+  if (mir_exactfit){
+    #add any exact fits
+    exactfit_list <- colnames(data_combined)[grep(x = colnames(data_combined),
+                                                  pattern = "exactfit_",
+                                                  fixed = TRUE)]
+    if (length(exactfit_list) > 0) {
+      #create formula terms
+      exactfit_list <- paste(exactfit_list, collapse = " + ")
+      #update formula with new pieces
+      this_formula_raw <- paste(this_formula_raw, exactfit_list, sep= " + ")
+      
+    } #end exactfit additions
+  }
+  
+  #final formula (includes any exact fits)
+  this_formula <- as.formula(this_formula_raw)
+  
+  ##
+  # forecast human risk model / regression
+  #
+  #USE cached model if given, if it's a lm object
+  if (!is_null(models_cached)){ 
+    
+    #very basic test if reg object. bam: bam, gam, glm, lm
+    if (is(models_cached[[c(this_model)]], "lm")){
+      #get right math model regression object
+      this_reg <- models_cached[[c(this_model)]]
+    } #end if reg obj
+    
+  } else {
+    #if not given a cached model, or cached model given was not an lm,
+    # create model
+    cl <- parallel::makeCluster(parallel::detectCores(logical = FALSE) - 1)
+    
+    #switch for regression type 
+    #[DEV] hook only, left open for development later [DMN]
+    if (reg_function == "GAM"){
+      this_reg  <- mgcv::bam(formula = this_formula,
+                             family = binomial(), 
+                             data = data_combined,
+                             subset = modeled == 1,
+                             cluster = cl)
+      
+    } #end regression switch
+    
+    parallel::stopCluster(cl)
+    
+  } #end cached model/create model
+  
+  # if saving models, add model obj to list
+  if (save_models){
+    model_objs[[this_model]] <- this_reg
+  }
+  
+  # add model plots to the list
+  # from ?plot.gam() "plots the component smooth functions that make it up, on the scale of the linear predictor"
+  model_plots[[this_model]] <- plot(
+    this_reg, select=1
+    # [DMN] tried adding shift with coef, but ends up the same 
+    #shift = coef(this_reg)[1]
+    # [DMN] tried to add rug=TRUE for data and residuals=TRUE,
+    # however that adds a lot of time ~12 seconds per for rug, ~30 for residuals
+  ) 
+  
+  ##
+  # predictions of this model
+  #
+  
+  # predict on this model
+  # note that this field will be overwritten each model in loop
+  data_combined$pred <- predict(this_reg, 
+                                newdata = data_combined, 
+                                newlevels=TRUE, type="response")
+  
+  #censor predictions outside of the alpha window for human cases 
+  # done in [V3] but with a confusing code comment, but this is what it does [DMN]
+  data_combined$pred[data_combined$week_epi < human_wk_min] <- 0
+  data_combined$pred[data_combined$week_epi > human_wk_max] <- 0
+  
+  #add predictions from the model to all model prediction data frame
+  # first generate a temporary data frame with just the data to add
+  pred_prep <- data.frame(arbo_ID = data_combined$arbo_ID,
+                          date_epi = data_combined$date_epi,
+                          week_epi = data_combined$week_epi,
+                          year_epi = data_combined$year_epi, 
+                          any_cases = data_combined$any_cases,
+                          case_count = data_combined$case_count,
+                          observed = data_combined$observed,
+                          modeled = data_combined$modeled,
+                          pred = data_combined$pred,
+                          model = this_model)
+  preds <- dplyr::bind_rows(preds, pred_prep)
+  
+  
+  ##
+  # evaluate this model fit
+  #
+  eval_prep <- data_combined[data_combined$modeled == 1,]
+  #for display in report, auc and aic should be rounded (as opposed to more digits here)
+  # round_any() is important to use to turn AUC into a pure numeric field not class 'auc' 
+  # as bind_rows will fail otherwise [DEV]
+  eval_prep <- data.frame(auc = round_any(pROC::roc(response = eval_prep$any_cases,
+                                                    predictor = eval_prep$pred,
+                                                    na.rm = TRUE,
+                                                    auc = TRUE)$auc,
+                                          0.00001),
+                          aic = round_any(AIC(this_reg)[1], 0.00001),
+                          model = this_model)
+  model_evals <- dplyr::bind_rows(model_evals, eval_prep)
+  
+} #end run each model
+
+# convert results data into tbls for ease later in plotting
+#  and return arbo_ID to original type
+preds <- tibble::as_tibble(preds) %>% 
+  dplyr::mutate(arbo_ID = as.character(arbo_ID) %>% 
+                  as(arbo_ID_class),
+                #also add doy of date_epi, used in graphing
+                doy = lubridate::yday(date_epi))
+model_evals <- tibble::as_tibble(model_evals)
+
+#calculate additional model evaluation metrics
+#temporal and spatial MAEs
+#borrowed from validation paper code and adapted [DMN]
+# only appears in appendix, but calc here
+# so that do not have to create appendix when running model evals if wanted [DMN]
+eval_mae_temporal <- preds %>% 
+  #ONLY EVAL MODELLED WEEKS
+  dplyr::filter(modeled == 1) %>% 
+  #no spatial/district
+  dplyr::group_by(model, year_epi, week_epi) %>% 
+  dplyr::summarize(sum_any_cases = sum(any_cases, na.rm = TRUE),
+                   sum_pred = sum(pred, na.rm = TRUE),
+                   .groups = "drop") %>% 
+  dplyr::mutate(abs_err = abs(sum_any_cases - sum_pred)) %>% 
+  #mean of all weeks
+  dplyr::group_by(model) %>% 
+  dplyr::summarize(mae_temporal = mean(abs_err, na.rm = TRUE))
+
+#spatial
+eval_mae_spatial <- preds %>% 
+  #ONLY EVAL MODELLED WEEKS
+  dplyr::filter(modeled == 1) %>% 
+  #spatial/district (NOT by week)
+  dplyr::group_by(model, year_epi, arbo_ID) %>% 
+  dplyr::summarize(sum_any_cases = sum(any_cases, na.rm = TRUE),
+                   sum_pred = sum(pred, na.rm = TRUE),
+                   .groups = "drop") %>% 
+  dplyr::mutate(abs_err = abs(sum_any_cases - sum_pred)) %>% 
+  #mean of all counties
+  dplyr::group_by(model) %>% 
+  dplyr::summarize(mae_spatial = mean(abs_err, na.rm = TRUE))
+
+#join together
+model_evals_extra <- model_evals %>% 
+  dplyr::left_join(eval_mae_temporal, by = c("model")) %>% 
+  dplyr::left_join(eval_mae_spatial, by = c("model")) %>% 
+  dplyr::select(model, everything())
+
+
+# if saving models, name and save out
+if (save_models){
+  saveRDS(model_objs, 
+          file = file.path(out_folder, paste0(out_name_base, ".rds")))
+}
+
+if (dev_write_output){
+  readr::write_csv(model_evals, 
+                   file = file.path(out_folder, paste0(out_name_base, "_evals.csv")))
+}
+
+if (model_evaluation | dev_write_output){
+  readr::write_csv(preds %>% 
+                     dplyr::left_join(id_crosswalk, by = "arbo_ID") %>% 
+                     dplyr::select(NAME, FIPS, week_epi, year_epi, model, pred, 
+                                   case_count, any_cases, observed, modeled, 
+                                   date_epi, doy, everything()) %>% 
+                     dplyr::mutate(year_report = epiyear_request,
+                                   week_report = epiweek_request),
+                   file = file.path(out_folder, paste0(out_name_base, "_predictions.csv")))
+  readr::write_csv(model_evals_extra %>% 
+                     dplyr::mutate(year_report = epiyear_request,
+                                   week_report = epiweek_request), 
+                   file = file.path(out_folder, paste0(out_name_base, "_evals_extra.csv")))
+}
+```
+
+<!-- End of internals: data load, processing, forecast modeling, etc. -->
+
+<!-- Everything below is report: text and figures. -->
+<!-- Division 1: Forecast results -->
+<!-- 1.1 Absolute risk map [condensed] -->
+<!-- 1.2 Relative risk map [modified] -->
+<!-- 1.3 Current-year fc chart [mean w/ max/min] PLUS human hx epicurve -->
+<!-- 1.4 Positives-to-cases [condensed: mean w/ range] -->
+<!-- 1.5 Model fit statistics [short list] -->
+<!-- 1.6 Multi-year forecasting chart [mean w/ max/min] -->
+
+<!-- Division 2: Input data summaries -->
+<!-- 2.1 Mosquito pools [with new] -->
+<!-- 2.2 Weather [observed] -->
+<!-- 2.3 Human cases -->
+<!-- 2.4 Data used descriptions -->
+<!-- 2.5 Spatial data -->
+<!-- 2.6 Run parameters -->
+<!-- 2.7 Reference map -->
+<!-- Optional Appendix -->
+
+\newpage
+\fancyhead[R]{ArboMAP West Nile Virus Forecast for `r epiyear_request` Week `r epiweek_request`}
+\fancyhead[L]{`r params$state_name`}
+\fancyhead[C]{}
+\fancyfoot[R]{\thepage}
+\fancyfoot[L]{Compiled `r format(Sys.time(), '%B %d, %Y')`}
+<!-- \fancyfoot[C]{} -->
+\fancyfoot[C]{FOR DEMONSTRATION ONLY}
+
+
+# Forecast results
+
+The Arbovirus Monitoring and Prediction (ArboMAP) system produces a weekly, county-level forecast of human West Nile virus (WNV) cases using environmental data combined with entomological data.
+
+*Modeling overview*: The transmission of mosquito-borne diseases, such as WNV, is influenced by environmental conditions that affect many aspects of the disease transmission system. ArboMAP uses an ensemble of different mathematical models that each are predicting if a county will report at least one case in a given week ('positive county-week'). Results presented are an average of the models with ranges as appropriate. As part of the process, mosquito infection rate is also modeled based on the mosquito pool data, and is included in the default modeling. ArboMAP uses generalized additive models (GAMs) with smooths for seasonality, and also lagged weather data, which allows it to model the time-delayed effects of weather conditions. `r if(params$create_appendix){"The appendix will expand all the results to show each individual model."}`
+
+```{r common_themes, echo=FALSE, include=FALSE}
+
+#   Note: because the custom themes call theme_void()/theme_bw() 
+#     make sure to add this theme first, 
+#     before doing any theme() adjustments for the individual plot
+
+# common map themes
+theme_arbo_map <- theme_void() +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "mm"))
+
+# common chart themes
+theme_arbo_chart <- theme_bw() +
+  theme(
+    # grid
+    panel.grid.major=element_blank(), 
+    panel.grid.minor=element_blank(),
+    #trbl : compact, while giving t(op) margin space to prevent title from being cut off
+    plot.margin = unit(c(1, 0, 0, 0), "mm"),
+    #font sizes
+    plot.title = element_text(size = 10),
+    plot.subtitle = element_text(size = 9),
+    axis.title = element_text(size = 10),
+    axis.text = element_text(size = 10)
+  )
+
+#na color for risk maps
+color_risk_na <- "gray50"
+
+#Named list of short model descriptions / better names
+# includes large set of potential names, less with be used in the actual reports most likely
+model_desc_names <- c(
+  "cub-fx-nonanom" = "Non-anomalized weather with fixed cubic splines",
+  "cub-fx-anom" = "Anomalized weather with fixed cubic splines",
+  "cub-sv-nonanom" = "Non-anomalized weather with seasonally-varying cubic splines",
+  "cub-sv-anom" = "Non-anomalized weather with seasonally-varying cubic splines",
+  "tp-fx-nonanom" = "Non-anomalized weather with fixed thin plate splines",
+  "tp-fx-anom" = "Anomalized weather with fixed thin plate splines",
+  "tp-sv-nonanom" = "Non-anomalized weather with seasonally-varying thin plate splines",
+  "tp-sv-anom" = "Anomalized weather with seasonally-varying thin plate splines")
+
+```
+
+```{r ave_preds_calc, echo=FALSE, include=FALSE}
+
+#starting data table used in both absolute and relative risk sections
+
+## Average predictions 
+# average predictions of all models per county
+preds_mod_ave <- preds %>% 
+  #specifically NOT grouping by 'model'
+  dplyr::group_by(arbo_ID, 
+                  #keeping all date-related fields, 
+                  # need to at least group on date_epi (or year+week)
+                  date_epi, week_epi, year_epi, doy) %>% 
+  dplyr::summarise(pred_ave = mean(pred, na.rm = TRUE),
+                   #some stats of all models for graphing
+                   pred_min = min(pred, na.rm = TRUE),
+                   pred_max = max(pred, na.rm = TRUE),
+                   #rest are same across models, taking first to keep
+                   #could have grouped by and gotten same result
+                   any_cases = dplyr::first(any_cases),
+                   case_count = dplyr::first(case_count),
+                   observed = dplyr::first(observed),
+                   modeled = dplyr::first(modeled),
+                   .groups = 'drop')
+
+```
+
+## Forecast week WNV absolute risk
+
+The following map displays the **absolute risk** of predicted positive counties during epidemiological week `r epiweek_request`. 
+
+This map can be used in conjunction with the **relative risk** map. The absolute risk map shows the risk of a county reporting at least one WNV positive human case during this week, and the relative risk map shows if this risk is elevated (or not) as compared to previous years. 
+
+<!-- \vspace{-5truemm} -->
+```{r absolute_risk_map, echo=FALSE, include=TRUE, fig.align='center', out.width="90%"}
+
+# Creates a map of absolute risk of the requested forecast week
+# Average of all models here (each model in appendix)
+
+# average predictions for all models per county 
+#   in the forecast week (and year)
+preds_mod_ave_fc_wk <- preds_mod_ave %>% 
+  dplyr::filter(year_epi == epiyear_request & week_epi == epiweek_request)
+
+#join with spatial
+sf_abs_risk <- data_sf %>% 
+  dplyr::left_join(preds_mod_ave_fc_wk, by = "arbo_ID")
+
+
+p_abs_risk <- ggplot2::ggplot() +
+  ggplot2::geom_sf(data = sf_abs_risk,
+                   aes(fill = pred_ave,
+                       #fake alpha to get NA legend entry
+                       alpha = "Not able to model")) +
+  viridis::scale_fill_viridis("", 
+                              #limits always 0 - 1
+                              limits = c(0, 1),
+                              breaks = c(0, 1),
+                              labels = c("0: Less likely\nto report any cases", 
+                                         "1: More likely\nto report at least one case"),
+                              na.value = color_risk_na) +
+  #fake scale for NA legend entry
+  scale_alpha_manual("", values = 1) +
+  ggtitle("Absolute risk in forecast week") +
+  theme_arbo_map +
+  theme(plot.title = element_text(size = 11)) +
+  #override legend for alpha to get nice
+  guides(alpha = guide_legend("", override.aes = list(fill = color_risk_na),
+                              #reorder legends for that color ramp is first
+                              order = 2)) +
+  guides(fill = guide_colorbar(order = 1))
+
+
+# If no highlight, proceed as normal
+if (!highlight_flag){
+
+plot(p_abs_risk)
+
+} else if (highlight_flag){
+  #if highlight counties, then add special map instead and table
+
+  
+  #if no mask, create highlight layer + to p_abs_risk
+  if (!highlight_mask){
+    
+    sf_highlight <- sf_abs_risk %>% 
+      #ONLY include highlighted counties
+      dplyr::filter(arbo_ID %in% highlight_ids)
+    
+    p_abs_risk_high <- p_abs_risk + 
+      geom_sf(data = sf_highlight,
+              aes(color = "Highlighted counties"), 
+              size = 1,
+              #let the original colors through
+              fill = NA) +
+      scale_color_manual("", 
+                         values = c("Highlighted counties" = "red"))
+    
+  }
+  
+  #if mask, recreate (not easily edited)
+  
+  if (highlight_mask){
+    
+    sf_highlight <- sf_abs_risk %>% 
+      #strip out all values (not counties) except for 'highlighted'
+      dplyr::mutate(pred_ave = if_else(arbo_ID %in% highlight_ids,
+                                       pred_ave,
+                                       NA_real_))
+    p_abs_risk_high <- ggplot2::ggplot() +
+      ggplot2::geom_sf(data = sf_highlight,
+                       aes(fill = pred_ave,
+                           #fake alpha to get NA legend entry
+                           alpha = "Not included")) +
+      viridis::scale_fill_viridis("", 
+                                  #limits always 0 - 1
+                                  limits = c(0, 1),
+                                  breaks = c(0, 1),
+                                  labels = c("0: Less likely\nto report any cases", 
+                                             "1: More likely\nto report at least one case"),
+                                  na.value = color_risk_na) +
+      #fake scale for NA legend entry
+      scale_alpha_manual("", values = 1) +
+      ggtitle("Absolute risk in forecast week") +
+      theme_arbo_map +
+      theme(plot.title = element_text(size = 11)) +
+      #override legend for alpha to get nice
+      guides(alpha = guide_legend("", override.aes = list(fill = color_risk_na),
+                                  #reorder legends for that color ramp is first
+                                  order = 2)) +
+      guides(fill = guide_colorbar(order = 1))    
+  }
+  
+  #plot whatever the highlighted plot version is
+  plot(p_abs_risk_high)
+
+  #either case, add table with highlighted county(ies) and values
+  
+  knitr::kable(preds_mod_ave_fc_wk %>% 
+                 dplyr::filter(arbo_ID %in% highlight_ids) %>% 
+                 #join with crosswalk to get pretty names
+                 dplyr::left_join(id_crosswalk, by = "arbo_ID") %>% 
+                 dplyr::select(NAME, pred_ave),
+               col.names = c("County", "Absolute Risk"),
+               digits = 2,
+               align = c("l", "c"),
+               caption = "Absolute risk for highlighted counties")
+  
+  
+} # end if highlight_flag
+
+```
+<!-- \vspace{-5truemm} -->
+
+\newpage
+## Forecast week WNV relative risk
+
+```{r relative_risk_map_calc, echo=FALSE, include=FALSE}
+
+# Want to compare the current risk to the historical/previous years
+
+# [V3] I've tried to be faithful to the intent of the algorithm from v3, 
+#       but there were no why-comments, so I had to try to logic it out [DMN]
+# [V3] The following is the v3 algorithm, below this is the new V4 algorithm:
+# V3.1. Take the mean of the predictions across all models for each county-week
+#     Note: using the preds_ave tbl created in forecast-summary code block
+# V3.2. If there are more than 1 predictions in a county-year, 
+#     (just as a check that the calculation will work) 
+#     then find the PRED value that would have occurred approximately 
+#       at the SAME DOY as the current forecast week, for each county-year
+#       (using the ave pred values from step 1.)  
+#       via a linear interpolation (using DOY)
+# V3.3. RANK these pred values (~DOY-of-forecast model-average pred values for each county-year)
+#           using 'random' method to break ties
+#     and divide by the number of years of values each county has.
+#     This creates a ~percentile of RANKED risk (basically)
+# V3.4. Break percentile into categories
+
+# V4 algorithm
+# 1. Take the mean of the predictions across all models for each county-week
+# 2. For each county-year, get the pred value at the same EPI WEEK as the forecast week
+# 3. RANK these pred values and divide by the number of years of values each county has.
+#     This creates a ~percentile of RANKED risk (basically)
+#     NOTE: TIES BREAKING has switched to 'average' as 'random' produces unstable results
+#           when there are large numbers of ties (many 0s, for example)
+#           especially in results when running arbo ID off of fips code vs county name 
+#             (for some reason, probably related to how they do 'random')
+# 4. Percentile values kept as continuous to match style of absolute risk maps
+#     [V3]: <= 12.5% lower than ave, => 87.5% higher than ave
+#     Will need to indicate something similar in legend
+# Note: This is therefore the relative risk of PREDICTED values. 
+#     May want to consider if there is some way to compare forecast-week predicted value
+#       against OBSERVED historical values (any_cases), but not certain how that 
+#       mathematically would work out (as any_cases is {0|1}). [DMN]
+
+rel_risk <- preds_mod_ave %>% 
+  #get all ave-preds at same epiweek (in any year)
+  #   now only 1 row per year
+  dplyr::filter(week_epi == epiweek_request) %>% 
+  # rank within each county
+  dplyr::group_by(arbo_ID) %>% 
+  dplyr::mutate(rank_pred = rank(pred_ave, ties.method = "average"),
+                #percentile of ranked pred by number of years
+                # note: rank such that lowest pred = 1
+                rank_perc = rank_pred / n() * 100) %>% 
+  #and get this current-year week
+  dplyr::filter(year_epi == epiyear_request) %>% 
+  #ungroup to finish
+  dplyr::ungroup()
+
+#join with spatial
+sf_rel_risk <- data_sf %>% 
+  dplyr::left_join(rel_risk, by = "arbo_ID")
+
+#same breaks as [V3]
+lower_risk <- 12.5
+higher_risk <- 87.5
+
+#Count of counties with higher than average risk
+rel_risk_distr_count <- rel_risk %>% 
+  dplyr::filter(rank_perc >= higher_risk) %>% 
+  nrow()
+
+
+```
+
+In the forecast week there are `r rel_risk_distr_count` counties with higher than average risk as compared to the same epidemiological week in previous years (`r max(human_exists_yr_min, year_modeling_start)` through `r year_modeling_end`). 
+
+This **relative risk** map may be used in conjunction with the **absolute risk** map. The absolute risk map shows the risk of a county reporting at least one WNV positive human case during this week, and the relative risk map shows if this risk is elevated (or not) as compared to previous years. 
+
+<!-- \vspace{-5truemm} -->
+```{r relative_risk_map, echo=FALSE, include=TRUE, fig.align='center', out.width="90%"}
+
+# Map
+#
+
+p_rel_risk <- ggplot2::ggplot() +
+  #by rank percentile
+  ggplot2::geom_sf(data = sf_rel_risk,
+                   aes(fill = rank_perc,
+                       #fake alpha to get NA legend entry
+                       alpha = "Not able to model")) +
+  viridis::scale_fill_viridis("", #"Risk\n", #\n for extra vertical space
+                              #limits always 0 - 100
+                              limits = c(0, 100),
+                              #using [V3] breaks
+                              breaks = c(0, lower_risk, 50, higher_risk, 100),
+                              labels = c("0",
+                                         paste(lower_risk, ": Lower than average risk"),
+                                         "50: Average risk",
+                                         paste(higher_risk, ": Higher than average risk"),
+                                         "100"),
+                              na.value = color_risk_na) +
+  #fake scale for NA legend entry
+  scale_alpha_manual("", values = 1) +
+  ggtitle("Risk in forecast week relative to the same epiweek in previous years") +
+  theme_arbo_map +
+  theme(plot.title = element_text(size = 11)) +
+  #override legend for alpha to get nice
+  guides(alpha = guide_legend("", override.aes = list(fill = color_risk_na),
+                              #reorder legends for that color ramp is first
+                              order = 2)) +
+  guides(fill = guide_colorbar(order = 1))
+
+#no highlight
+if (!highlight_flag){
+  
+  plot(p_rel_risk)
+
+}
+
+#If highlight counties, create an altered map
+if (highlight_flag){
+  
+  #if no mask, create highlight layer + to p_rel_risk
+  if (!highlight_mask){
+    
+    sf_highlight <- sf_rel_risk %>%
+      #ONLY include highlighted counties
+      dplyr::filter(arbo_ID %in% highlight_ids)
+    
+    p_rel_risk_high <- p_rel_risk +
+      geom_sf(data = sf_highlight,
+              aes(color = "Highlighted counties"),
+              size = 1,
+              #let the original colors through
+              fill = NA) +
+      scale_color_manual("",
+                         values = c("Highlighted counties" = "red"))
+    
+  }
+  
+  #if mask, recreate (not easily edited)
+  
+  if (highlight_mask){
+    
+    sf_highlight <- sf_rel_risk %>%
+      #strip out all values (not counties) except for 'highlighted'
+      dplyr::mutate(rank_perc = if_else(arbo_ID %in% highlight_ids,
+                                        rank_perc,
+                                        NA_real_))
+    p_rel_risk_high <- ggplot2::ggplot() +
+      #by rank percentile
+      ggplot2::geom_sf(data = sf_highlight,
+                       aes(fill = rank_perc,
+                           #fake alpha to get NA legend entry
+                           alpha = "Not included")) +
+      viridis::scale_fill_viridis("", 
+                                  #limits always 0 - 100
+                                  limits = c(0, 100),
+                                  #using [V3] breaks
+                                  breaks = c(0, lower_risk, 50, higher_risk, 100),
+                                  labels = c("0",
+                                             paste(lower_risk, ": Lower than average risk"),
+                                             "50: Average risk",
+                                             paste(higher_risk, ": Higher than average risk"),
+                                             "100"),
+                                  na.value = color_risk_na) +
+      #fake scale for NA legend entry
+      scale_alpha_manual("", values = 1) +
+      ggtitle("Risk in forecast week relative to the same epiweek in previous years") +
+      theme_arbo_map +
+      theme(plot.title = element_text(size = 11)) +
+      #override legend for alpha to get nice
+      guides(alpha = guide_legend("", override.aes = list(fill = color_risk_na),
+                                  #reorder legends for that color ramp is first
+                                  order = 2)) +
+      guides(fill = guide_colorbar(order = 1)) 
+    
+  }
+  
+  #plot whatever the highlighted plot version is
+  plot(p_rel_risk_high)
+  
+} # end if highlight_flag
+
+
+## Tables
+#
+#Table of counties with higher than average risk
+
+# only IF there are counties
+rr_high_flag <- rel_risk %>% 
+  dplyr::filter(rank_perc >= higher_risk) %>% 
+  nrow() > 0
+
+if (rr_high_flag) {
+  knitr::kable(rel_risk %>% 
+                 dplyr::filter(rank_perc >= higher_risk) %>% 
+                 #join with crosswalk to get pretty names
+                 dplyr::left_join(id_crosswalk, by = "arbo_ID") %>% 
+                 dplyr::select(NAME, rank_perc),
+               col.names = c("County", "Relative risk percentile"),
+               digits = 0,
+               align = c("l", "c"),
+               caption = "Counties with higher than average risk")
+}
+
+
+# If highlight counties, optional extra table
+
+if (highlight_flag){
+  
+  rr_high_highlight <- rel_risk %>% 
+    dplyr::filter(arbo_ID %in% highlight_ids) %>% 
+    #join with crosswalk to get pretty names
+    dplyr::left_join(id_crosswalk, by = "arbo_ID") %>% 
+    dplyr::select(NAME, rank_perc)
+  
+  knitr::kable(rr_high_highlight,
+               col.names = c("County", "Relative risk percentile"),
+               digits = 0,
+               align = c("l", "c"),
+               caption = "Relative risk of highlighted counties")
+}
+
+
+
+```
+
+## Forecast year
+
+The following graph is the predicted epicurve of the forecast year: the average of all models is shown as a `r colorize("dark red", "darkred")` line, with the range of all models in the shaded ribbon. Forecasts are shown as a dotted line and the predicted values from before the current forecast week ('backcast') are shown as a solid line. `r if(params$create_appendix){"The appendix will have a version of this chart with a series for each model, rather than an average."}`
+
+The historical **observed** proportion of counties positive, averaged over all known years, is also shown, here as a `r colorize("dark blue", "darkblue")` line. This is excluding human cases that occurred very early or very late in the season (temporal outliers), based on the percentage cut-off in the parameters, `r params$case_trim_alpha`. This plotted curve allows a comparison between the timing and height of the predicted peak of cases as compared to averaged historical years. In the averaged year, `r cases_perc_obs_hx`% of the yearly cases would have been observed by this forecast week.
+
+
+```{r current_year_forecast, echo=FALSE, include=TRUE, fig.align='center', fig.width=6, fig.height=3.1}
+
+#Creates an epicurve of the current forecast year PREDICTIONS
+# Average of models, with ribbon for min/max models
+# Adds the HISTORICAL human epicurve 
+#
+# Note: individual model version moved to Appendix
+
+# [DEV] Note that human summary data is on a different scale
+#   than forecast, and ggplot2 does NOT allow for 2 different x-axes
+# Rescaled by using the average historical proportion positive
+#   as opposed to the [V3] count of counties positive
+
+## Statewide average predictions
+# averaging to state first
+preds_st_ave <- preds %>% 
+  #not grouping by arbo_ID here
+  dplyr::group_by(model, 
+                  #keeping all date-related fields, 
+                  # need to at least group on date_epi (or year+week)
+                  date_epi, week_epi, year_epi, doy) %>% 
+  dplyr::summarise(pred_ave = mean(pred, na.rm = TRUE),
+                   mean_any_cases = mean(any_cases, na.rm = TRUE),
+                   tot_case_count = sum(case_count, na.rm = TRUE), 
+                   .groups = 'drop')
+# now averaging by model, grouping just on date fields
+preds_st_mod_ave <- preds_st_ave %>% 
+  dplyr::group_by(date_epi, week_epi, year_epi, doy) %>% 
+  dplyr::summarise(pred_mod_ave = mean(pred_ave, na.rm = TRUE),
+                   #some stats of all models for graphing
+                   pred_mod_min = min(pred_ave, na.rm = TRUE),
+                   pred_mod_max = max(pred_ave, na.rm = TRUE),
+                   #rest are same for each model, taking first to keep
+                   mean_any_cases = first(mean_any_cases),
+                   tot_case_count = first(tot_case_count),
+                   .groups = 'drop') %>% 
+  #split into two series : pre & post fc_week - for graphing with two different styles
+  #intentionally having fc week be both pre and post, so lines appear connected
+  dplyr::mutate(pred_mod_ave_pre = dplyr::if_else(year_epi < epiyear_request, #previous years
+                                                  pred_mod_ave,
+                                                  NA_real_),
+                #earlier in forecast yr, update 
+                pred_mod_ave_pre = dplyr::if_else(week_epi <= epiweek_request & year_epi == epiyear_request, 
+                                                  pred_mod_ave,
+                                                  pred_mod_ave_pre),
+                pred_mod_ave_post = dplyr::if_else(week_epi >= epiweek_request & year_epi == epiyear_request,
+                                                   pred_mod_ave,
+                                                   NA_real_)) 
+
+#only forecast year (statewide average model predictions)
+preds_st_mod_ave_fc_yr <- preds_st_mod_ave %>% 
+  dplyr::filter(year_epi == epiyear_request) 
+
+#censored to modelled range (with buffer)
+preds_st_mod_ave_fc_yr_censor <- preds_st_mod_ave_fc_yr %>% 
+  #censoring to just modeled period WITH buffer
+  dplyr::filter(week_epi >= (human_wk_min - 1) &
+                  week_epi <= (human_wk_max + 1))
+
+#human data: average of all data by week of year
+data_human_st_prop <- data_combined %>%
+  #proportion of counties positive in each year by week
+  dplyr::group_by(year_epi, week_epi) %>%
+  dplyr::summarise(tot_any = sum(any_cases, na.rm = TRUE),
+                   prop_pos = tot_any / length(dx_human_counties),
+                   .groups = 'drop') %>%
+  #summary stats by week
+  dplyr::group_by(week_epi) %>%
+  dplyr::summarise(pp_mean = mean(prop_pos, na.rm = TRUE),
+                   pp_med = median(prop_pos, na.rm = TRUE),
+                   pp_min = min(prop_pos, na.rm = TRUE),
+                   pp_max = max(prop_pos, na.rm = TRUE))
+# #DEV quick check
+# ggplot() + 
+#    geom_line(data = data_human_st_prop %>% 
+#                tidyr::pivot_longer(c(pp_mean, pp_med, pp_min, pp_max), 
+#                                    names_to = "stat", values_to = "value"), 
+#              aes(x=week_epi, y = value, color = stat))
+
+#Combined data, long format for ease in plotting, weird with ribbon data
+data_cur_yr <- preds_st_mod_ave_fc_yr_censor %>% 
+  #get human data 
+  dplyr::left_join(data_human_st_prop %>% 
+                     #var for plotting
+                     dplyr::mutate(line_style = "human"), 
+                   by = "week_epi") %>%  
+  #pivot long for ggplot
+  dplyr::select(week_epi, pred_mod_ave_pre, pred_mod_ave_post, pred_mod_min, pred_mod_max, pp_mean) %>% 
+  tidyr::pivot_longer(cols = c(pred_mod_ave_pre,
+                               pred_mod_ave_post,
+                               pp_mean),
+                      names_to = "series",
+                      values_to = "stat_value") %>% 
+  #change order in legend
+  dplyr::mutate(series = factor(series, levels = c("pp_mean", "pred_mod_ave_pre", "pred_mod_ave_post")))
+
+#Current year forecast plot
+p_cur_yr <- ggplot2::ggplot(data = data_cur_yr) +
+  #min/max ribbon first so that ave pred plots on top
+  geom_ribbon(aes(x = week_epi,
+                  ymin = pred_mod_min,
+                  ymax = pred_mod_max,
+                  fill = "model_range",
+                  alpha = "model_range")) +
+  geom_line(aes(x = week_epi,
+                y = stat_value,
+                linetype = series,
+                color = series)) +
+  #current week marker
+  geom_vline(xintercept = epiweek_request, linetype="dashed", color = "grey25") +
+  #plot labels and adjustments
+  #linetype and color match to keep line series in one legend
+  scale_linetype_manual("",
+                        values = c("pp_mean" = "solid", 
+                                   "pred_mod_ave_pre" = "solid",
+                                   "pred_mod_ave_post" = 22), #22 is tight dashed
+                        labels = c("pp_mean" = "Historical\naverage proportion", 
+                                   "pred_mod_ave_pre" = "Backcast",
+                                   "pred_mod_ave_post" = "Forecast")) +
+  scale_color_manual("",
+                     values = c("pp_mean" = "darkblue", 
+                                "pred_mod_ave_pre" = "darkred",
+                                "pred_mod_ave_post" = "darkred"), 
+                     labels = c("pp_mean" = "Historical\naverage proportion", 
+                                "pred_mod_ave_pre" = "Backcast",
+                                "pred_mod_ave_post" = "Forecast")) +
+  #fill and alpha match to keep ribbon in one legend
+  scale_fill_manual("", 
+                    values = c("model_range" = "darkred"),
+                    labels = "Range of all models") +
+  scale_alpha_manual("", 
+                     values = c("model_range" = 0.15),
+                     labels = "Range of all models") +
+  ggtitle(paste("Statewide forecast made on", epiyear_request, "Week", epiweek_request)) + 
+  #[V3] How y-axis labeled in v3, keeping same [DMN]
+  ylab("Proportion of counties positive") + 
+  xlab("Epiweek") +
+  theme_arbo_chart 
+
+plot(p_cur_yr)
+
+# #Test to see old V3 epi curve in comparison
+# data_human_st <- data_combined %>%
+#   #proportion of counties positive by week
+#   dplyr::group_by(week_epi) %>%
+#   dplyr::summarise(tot_any = sum(any_cases, na.rm = TRUE),
+#                    .groups = 'drop')
+# p_human_curve <- ggplot() +
+#   geom_line(data = data_human_st %>%
+#                        #censoring to same just modeled period WITH buffer
+#                          dplyr::filter(week_epi >= (human_wk_min - 1) &
+#                                          week_epi <= (human_wk_max + 1)),
+#             aes(x = week_epi, y = tot_any)) +
+#   #current week marker
+#   geom_vline(xintercept = epiweek_request, linetype="dashed", color = "grey75") +
+#   ggtitle("Counties with any number of cases, over all years") +
+#   ylab("Count of counties") +
+#   xlab("Epiweek") +
+#   theme_arbo_chart
+# plot(p_human_curve)
+
+```
+
+## Case estimation
+
+ArboMAP models are based on 'positive county-weeks', the probability that a county would have at least one human WNV case in a given week. These values can be used to predict a total number of **cases**, shown in the table below. 
+
+```{r positives_to_cases, echo=FALSE, include=TRUE}
+
+#Estimates number of cases from positive county-weeks
+# Splits out previous yearly summaries to model
+#   and predicts on current year
+
+#calculate yearly summaries
+pred_yrs <- preds %>% 
+  #summing all counties, all weeks in year
+  dplyr::group_by(year_epi, model) %>% 
+  dplyr::summarise(tot_any = sum(any_cases, na.rm = TRUE),
+                   tot_pred = sum(pred, na.rm = TRUE), 
+                   tot_cases = sum(case_count, na.rm = TRUE),
+                   .groups = 'drop') %>% 
+  #[V3] 
+  dplyr::mutate(weight = 1)
+
+#this forecast year
+pred_yrs_fc_yr <- pred_yrs %>% 
+  dplyr::filter(year_epi == epiyear_request) %>% 
+  #cases not known in forecast year, copy over predictions to be used to predict
+  dplyr::mutate(tot_any = tot_pred)
+
+#all previous years
+pred_yrs_pre_yr <- pred_yrs %>% 
+  dplyr::filter(year_epi < epiyear_request) %>% 
+  #bind these rows, as in [V3], 
+  #   [DEV] uncertain why needed, assuming math reasons [DMN]
+  dplyr::bind_rows(tidyr::expand_grid(tot_any = 0,
+                                      tot_cases = 0,
+                                      weight = 100,
+                                      model = unique(pred_yrs$model))) %>% 
+  #make sure model is a factor (necessary for regression)
+  dplyr::mutate(model = factor(model))
+
+
+# [V3] figure out relationship between positivity and total cases
+pos_reg <- lm(tot_cases ~ poly(x = tot_any, degree = 2), 
+              weights = weight, 
+              data = pred_yrs_pre_yr %>% as.data.frame())
+
+#create a framework to put predictions into 
+# predicting a range from 0 to the max number of observed total of any_cases for a year
+# used in graph in [V3], may move to appendix, may just refer to this dataset from there # DEV <<>>
+pos_cases_pred <- expand.grid(tot_any = seq(from = 0,
+                                            to = max(pred_yrs$tot_any, na.rm=TRUE),
+                                            #creates seq of equally spaced values from 'from' to 'to'
+                                            length.out = 50),
+                              model = unique(pred_yrs$model)) %>% 
+  tibble::as_tibble()
+pos_cases_pred$tot_pred_cases <- predict(pos_reg, newdata = pos_cases_pred)
+
+# # predict past cases for comparison
+# # Note that exact fit years have the same predictions in all models in these years
+# pred_yrs_pre_yr$tot_pred_cases <- predict(pos_reg, newdata = pred_yrs_pre_yr) %>% 
+# #remove NA rows (the weight = 100 rows, uncertain why these were added earlier [DMN])
+# dplyr::filter(!is.na(year_epi))
+
+# predict this year
+pred_yrs_fc_yr$tot_pred_cases <- predict(pos_reg, newdata = pred_yrs_fc_yr)
+
+#average model (in main report)
+pos_case_preds_ave <- pred_yrs_fc_yr %>% 
+  #summarize across models
+  dplyr::group_by(year_epi) %>% 
+  #current year forecast prediction and estimated total cases
+  dplyr::summarise(ave_tot_pred = mean(tot_pred, na.rm = TRUE),
+                   ave_tot_pred_cases = mean(tot_pred_cases, na.rm = TRUE),
+                   min_tot_pred_cases = min(tot_pred_cases, na.rm = TRUE),
+                   max_tot_pred_cases = max(tot_pred_cases, na.rm = TRUE),
+                   sd_tot_pred_cases = sd(tot_pred_cases, na.rm = TRUE)) %>% 
+  #strings for table
+  # rounding with ceiling because you cannot have a fractional case (in reality)
+  #   [DEV] [DMN] This is how I was taught during my MSPH, so I believe it is standard
+  dplyr::mutate(
+    range_pred_cases = paste0(round_any(min_tot_pred_cases, 1, ceiling), 
+                              " - ", round_any(max_tot_pred_cases, 1, ceiling)),
+    ave_sd_pred_cases = paste0(round_any(ave_tot_pred_cases, 1, ceiling), 
+                               " (+/-", round_any(sd_tot_pred_cases, 1, ceiling), ")"))
+
+#create table to display
+knitr::kable(pos_case_preds_ave %>%
+               dplyr::select(year_epi, ave_tot_pred, ave_sd_pred_cases, range_pred_cases),
+             col.names = c("Year", 
+                           "Predicted positive county-weeks", 
+                           "Average estimated cases (standard dev)", 
+                           "Range of estimated cases"),
+             digits = 0, 
+             align = c("l","c","c","c"),
+             caption = "Estimated number of WNV cases")
+
+```
+
+## Model fit statistics
+
+The following table gives a summary of how well the model is fitting the historical years. The Area Under the ROC curve (AUC) is a statistic that ranges from 0 (model is right 0% of the time) to 1 (model is right 100% of the time). Scores above 0.5 are better than a random model, with >0.7 generally considered acceptable and >0.8 as good.
+
+```{r model_fit, echo=FALSE, include=TRUE}
+
+#Creates a table of basic model fit statistics: 
+# Average AUC (from all models)
+# Additional metrics available in appendix, by model
+
+model_auc <- model_evals %>% 
+  #average of all models
+  dplyr::summarise(auc_ave = mean(auc, na.rm = TRUE),
+                   auc_min = min(auc, na.rm = TRUE),
+                   auc_max = max(auc, na.rm = TRUE)) %>% 
+  dplyr::mutate(model = "Average of all models")
+
+knitr::kable(model_auc %>% 
+               dplyr::select(model, auc_ave, auc_min, auc_max),
+             col.names = c("Model", "Average AUC", "Min AUC", "Max AUC"),
+             digits = 2,
+             align = c("l", "c", "c", "c"),
+             caption = "Area Under Curve (AUC) statistics of all model fits")
+```
+
+\blandscape
+## Multi-year forecast
+
+The following chart shows the model results for the entire modeled period from `r max(human_exists_yr_min, year_modeling_start)` through `r year_modeling_end`. Years prior to the forecast year that had human case data were used for fitting the model. 
+
+Similar to the previous forecast year chart, the average of all models is shown as a `r colorize("dark red", "darkred")` line, with the range of all models as the shaded ribbon. Forecasts are shown as a dotted line and predicted values from before the current forecast week ('backcast') are shown as a solid line. The historical **observed** values are shown in black. `r if(params$create_appendix){"The appendix will have a version of this chart with a series for each model, rather than an average."}`
+
+```{r multi_year_forecast, echo=FALSE, include=TRUE, fig.align='center', fig.width=10}
+
+#Creates a multi-year time series chart of the predicted (model average) vs. 
+#   observed positive county-weeks
+
+multiyr <- preds_st_mod_ave %>% #tbl from beginning of current_year_forecast code block
+  #update mean_any_cases to be NA for any year AFTER human end year (incl forecast year)
+  dplyr::mutate(mean_any_cases = dplyr::if_else(year_epi > params$year_human_end,
+                                                NA_real_,
+                                                mean_any_cases)) %>% 
+  #censoring to just modeled period WITH buffer
+  # otherwise graph has long unmodelled/0 stretches
+  dplyr::filter(week_epi >= (human_wk_min - 1) &
+                  week_epi <= (human_wk_max + 1)) %>% 
+  #modified date to deal with skipping weeks between seasons
+  # borrowed from [V3]
+  # year + decimal fraction [DMN]
+  dplyr::mutate(modwk = (week_epi - human_wk_min) / (human_wk_max - human_wk_min + 1),
+                moddate = year_epi + modwk)
+
+#learning from current year graph, splitting into two datasets 
+# for 1) ribbon and 2) the line series
+multiyr_wide <- multiyr %>% 
+  #pull needed 
+  dplyr::select(moddate, 
+                pred_mod_min, pred_mod_max)
+
+multiyr_long <- multiyr  %>% 
+  #pull needed and pivot long
+  dplyr::select(moddate, 
+                pred_mod_ave_pre, pred_mod_ave_post, mean_any_cases) %>% 
+  tidyr::pivot_longer(cols = c(pred_mod_ave_pre, pred_mod_ave_post, mean_any_cases),
+                      names_to = "series",
+                      values_to = "value")
+
+
+p_multiyr <- ggplot() +
+  #min/max ribbon first so that ave pred plots on top
+  geom_ribbon(data = multiyr_wide,
+              aes(x = moddate,
+                  ymin = pred_mod_min,
+                  ymax = pred_mod_max,
+                  fill = "model_range",
+                  alpha = "model_range")) +
+  geom_line(data = multiyr_long,
+            aes(x = moddate, 
+                y = value,
+                color = series,
+                linetype = series)) +
+  #plot labels and adjustments
+  #linetype and color match to keep line series in one legend
+  scale_linetype_manual("",
+                        values = c("mean_any_cases" = "solid", 
+                                   "pred_mod_ave_pre" = "solid",
+                                   "pred_mod_ave_post" = 22), #22 is tight dashed
+                        labels = c("mean_any_cases" = "Observed", 
+                                   "pred_mod_ave_pre" = "Backcast",
+                                   "pred_mod_ave_post" = "Forecast")) +
+  scale_color_manual("",
+                     values = c("mean_any_cases" = "black", 
+                                "pred_mod_ave_pre" = "darkred",
+                                "pred_mod_ave_post" = "darkred"), 
+                     labels = c("mean_any_cases" = "Observed",  
+                                "pred_mod_ave_pre" = "Backcast",
+                                "pred_mod_ave_post" = "Forecast")) +
+  #fill and alpha match to keep ribbon in one legend
+  scale_fill_manual("", 
+                    values = c("model_range" = "darkred"),
+                    labels = "Range of all models") +
+  scale_alpha_manual("", 
+                     #darker (higher alpha) than current yr so that shows up better here
+                     values = c("model_range" = 0.25), 
+                     labels = "Range of all models") +
+  #x-axis management to only show the modelled weeks per year 
+  #   borrowed heavily from [V3]
+  scale_x_continuous(breaks = seq(from = params$year_human_start + 0.5,
+                                  to = epiyear_request + 0.5,
+                                  by = 1),
+                     labels = seq(from = params$year_human_start, 
+                                  to = epiyear_request, 
+                                  by = 1),
+                     limits = c(params$year_human_start,
+                                epiyear_request + 1)) +
+  ggtitle(paste("Statewide model predictions")) + 
+  #[V3] How y-axis labeled in v3, keeping same [DMN]
+  ylab("Proportion of counties positive") + 
+  xlab("Epiweek") +
+  theme_arbo_chart +
+  #move legend to bottom to give more room for chart
+  theme(legend.position = "bottom")
+
+plot(p_multiyr)
+
+```
+
+\elandscape
+
+# Input data summaries
+
+The report was requested for `r params$forecast_date`, which is CDC/MMWR epiweek `r epiweek_request` in epiyear `r epiyear_request`. 
+
+## Human cases
+
+After data processing, the human case data contained a total of `r dx_human_nrow_2clean` rows containing data from years: `r knitr::combine_words(human_exists_yr_list)`. Parameters were set to include human data from `r params$year_human_start` through `r params$year_human_end`. 
+`r if(length(human_yrs_missing) == 0){paste0("Data from all years were found in the data file.")}`
+`r if(length(human_yrs_missing) > 0){paste0("The following years were not found in the dataset:", human_yrs_missing %>% sort() %>% knitr::combine_words(), ".", " Confirm that these years were zero-case years, and not data missing from the dataset.")}` 
+
+`r if(nrow(dx_human_unmatched) > 0){paste0("The human case data entries that were unmatched to spatial data during processing are in the table below. Please check for mispellings in the original file. Internal IDs for county names will show in lower case with other formatting applied for attempted matching.")}`
+```{r human_unmatched, echo=FALSE, include=TRUE}
+if(nrow(dx_human_unmatched) > 0){
+  knitr::kable(dx_human_unmatched,
+             align = c("c", "c"),
+             caption = "Unmatched human case entries")
+}
+
+```
+
+Over all years, the state saw a cumulative total of `r state_cases_total` human cases representing `r state_any_cases_total` positive county-weeks from a total of `r length(dx_human_counties)` counties.
+
+\vspace{-5truemm}
+```{r human_map, echo=FALSE, include=TRUE, fig.align='center', out.width="80%"}
+
+#Creates a map of human cases: 
+# 1) over all years
+# Statistic will be total case counts, ramped
+
+# map of all human cases
+h_county <- data_human %>% 
+  #filter by human start and end years
+  dplyr::filter(year_epi >= params$year_human_start &
+                  year_epi <= params$year_human_end) %>% 
+  #summarize to county over all years
+  dplyr::group_by(arbo_ID) %>% 
+  dplyr::summarise(case_count = n(),
+                   .groups = "drop") %>% 
+  #add in zero counties (notice RIGHT join)
+  dplyr::right_join(data_sf %>% 
+                      sf::st_drop_geometry() %>% 
+                      dplyr::select(arbo_ID),
+                    by = "arbo_ID") %>% 
+  #and add zeros for case counts (would be NA from right join)
+  dplyr::mutate(case_count = dplyr::if_else(is.na(case_count), 0L, case_count))
+
+#create spatial with data
+sf_human <- data_sf %>% 
+  dplyr::left_join(h_county, by = "arbo_ID")
+
+p_map_human <- ggplot() +
+  geom_sf(data = sf_human,
+          aes(fill = case_count)) +
+  viridis::scale_fill_viridis(name = paste0("Total case counts\n", params$year_human_start, " - ", params$year_human_end),
+                              option = "rocket",
+                              na.value = "gray60", 
+                              direction = -1) +
+  ggtitle("Historical cumulative human cases") +
+  theme_arbo_map
+
+
+#no highlight
+if (!highlight_flag){
+  
+plot(p_map_human)
+
+} else if (highlight_flag){
+  
+  #If highlight counties, create an altered map & table
+  # only non-masking highlight here, even if mask
+  
+  sf_highlight <- sf_human %>%
+    #ONLY include highlighted counties
+    dplyr::filter(arbo_ID %in% highlight_ids)
+  
+  p_map_human_hl <- p_map_human +
+    geom_sf(data = sf_highlight,
+            aes(color = "Highlighted counties"),
+            size = 1,
+            #let the original colors through
+            fill = NA) +
+    scale_color_manual("",
+                       values = c("Highlighted counties" = "blue")) +
+    #make sure original color bar is at top
+    guides(fill = guide_colorbar(order = 1))
+  
+  plot(p_map_human_hl)
+  
+  h_county_hl <- h_county %>%
+    #get only highlight counties
+    dplyr::filter(arbo_ID %in% highlight_ids) 
+  
+  knitr::kable(h_county_hl %>% 
+                 #join with crosswalk to get pretty names
+                 dplyr::left_join(id_crosswalk, by = "arbo_ID") %>% 
+                 #select columns for table
+                 dplyr::select(NAME, case_count) %>% 
+                 dplyr::arrange(NAME),
+               col.names = c("County", "Cases"),
+               digits = 1,
+               align = c("l", "c"),
+               caption = "Cumulative human cases for highlighted counties")
+  
+} #end if highlight
+
+
+#[DEV] Considered previous year map, but small case counts could be 
+# a privacy concern so omitted [DMN]
+```
+\vspace{-5truemm}
+
+To compare the epicurve of human cases in each year, the heatmap below shows when in each year the cases occurred. 
+
+```{r human_heatcurves, echo=FALSE, include=TRUE, fig.align='center', out.width="80%", fig.width=7, fig.height=3.5}
+
+# Epicurves are a standard way of looking at when cases happen
+# But very difficult to distinguish many lines on the same chart
+# or deal with many charts stacked on top of each other (small y-axis size)
+# So using a heatmap instead
+
+h_epicurve <- data_human %>% 
+  dplyr::group_by(year_epi, week_epi) %>% 
+  dplyr::summarise(case_count = n(),
+                   .groups = "drop") %>% 
+  dplyr::mutate(year_epi = factor(year_epi))
+
+
+p_epiheat <- ggplot2::ggplot() +
+  geom_tile(data = h_epicurve,
+            aes(x = week_epi, 
+                y = year_epi,
+                fill = case_count),
+            color = "black",
+            size = 0.2) +
+  viridis::scale_fill_viridis("WNV Cases",
+                              option = "magma",
+                              direction = -1,
+                              na.value = "gray80",
+                              discrete = FALSE) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 8)) +
+  xlab("Epiweek") +
+  ylab("") +
+  theme_arbo_chart
+
+plot(p_epiheat)
+```
+
+\newpage
+## Mosquito pools
+
+```{r mosquito_pools_2wks_calc, echo=FALSE, include=TRUE}
+
+#Creates summaries of the input mosquito data: first 2 of 4 parts
+# 1. Map of the positive pools in last 2 weeks, differentiating between non-reporting and 0 positive pools. Note: 2 weeks asked for in multi-state meeting.
+# 2. Table of count of pos & neg pools: last 2 weeks & year to date (year to and including forecast week)
+# 3. Vector pool positive rate timeseries with year comparisons
+# 4. Relative risk due to vector infection rate
+
+## Data for past 2 weeks
+# "past two weeks" was the request. 
+# If data exists in the current forecast epiweek, then 'past two' will be last epiweek and this epiweek. 
+# If data does NOT exist in the current forecast epiweek, then 'past two' will the two epiweeks PRIOR to this week (no data checks, at the moment)
+
+# First, data check for current epiweek
+mosq_fcwk_exists <- data_mosquito %>% 
+  #filter to forecast epiweek
+  filter(year_epi == epiyear_request &
+           week_epi == epiweek_request) %>% 
+  #test if there are rows: TRUE if there is, FALSE if not
+  nrow() > 0
+
+#create appropriate two week dataset  
+if (mosq_fcwk_exists) {
+  
+  #this epiweek and one previous
+  #week numbers, chronological order
+  mosq_2wks <- c(epiweek_request - 1,
+                 epiweek_request) 
+  #dataset
+  data_mosq_2wk <- data_mosquito %>% 
+    #filter to forecast year
+    dplyr::filter(year_epi == epiyear_request,
+                  #and filter weeks
+                  week_epi %in% mosq_2wks)
+} else {
+  #week before forecast week and week before that
+  
+  #week numbers, chronological order
+  mosq_2wks <- c(epiweek_request - 2,
+                 epiweek_request - 1) 
+  #dataset
+  data_mosq_2wk <- data_mosquito %>% 
+    #filter to forecast year
+    dplyr::filter(year_epi == epiyear_request,
+                  #and filter weeks
+                  week_epi %in% mosq_2wks)
+} #end mosq_2wks creation
+
+
+#dates based on epiweeks 
+# FIRST day of first epiweek to LAST day of second epiweek
+mosq_2wks_dts <- c(make_date_yw(year = epiyear_request, week = mosq_2wks[1], weekday = 1),
+                   make_date_yw(year = epiyear_request, week = mosq_2wks[2], weekday = 7))
+
+mosq_2wks_dts_str <- paste0(format(mosq_2wks_dts[1], "%m/%d/%Y"),
+                            " through ",
+                            format(mosq_2wks_dts[2], "%m/%d/%Y"))
+
+#actual beginning - end dates in dataset, not purely epiweek based
+mosq_2wks_dat_dts <- c(min(data_mosq_2wk$date_obs, na.rm = TRUE),
+                       max(data_mosq_2wk$date_obs, na.rm = TRUE))
+
+#handle when no data in 2wk period: min/max will be Inf/-Inf
+mosq_2wks_d1 <- format(mosq_2wks_dat_dts[1], "%m/%d/%Y")
+mosq_2wks_d2 <- format(mosq_2wks_dat_dts[2], "%m/%d/%Y")
+
+mosq_2wks_dat_dts_str <- paste0(if_else(mosq_2wks_d1 == Inf, "NA", mosq_2wks_d1),
+                                " through ",
+                                if_else(mosq_2wks_d2 == -Inf, "NA", mosq_2wks_d2))
+
+```
+
+After data processing, the mosquito pool data contained a total of `r dx_mosq_nrow_2clean` rows, containing data from years: `r knitr::combine_words(mosq_exists_yr_list)`. Overall during this time frame, a total of `r length(dx_mosq_counties)` counties reported mosquito data. 
+
+`r if(nrow(dx_mosq_unmatched) > 0){paste0("The mosquito data entries that were unmatched to spatial data during processing are in the table below. Please check for misspellings in the original file.")}`
+```{r mosq_unmatched, echo=FALSE, include=TRUE}
+if(nrow(dx_mosq_unmatched) > 0){
+  knitr::kable(dx_mosq_unmatched,
+             align = c("c", "c"),
+             caption = "Unmatched mosquito entries")
+}
+```
+
+Parameters were set to include mosquito data from `r params$year_mosquito_start` through `r params$year_mosquito_end`.
+`r if(length(mosq_yrs_missing) == 0){paste0("Data from all years were found in the data file.")}`
+`r if(length(mosq_yrs_missing)>0){paste0("The following years were not found in the dataset: ", mosq_yrs_missing %>% sort() %>% knitr::combine_words(), ".")}` 
+Note that even if there were no positive pools in a given year, if there were any pools tested then the data will be useful; zero infection rates do predict low-risk years and should be used.
+
+Parameters were set to include mosquito data from day of year `r params$mosquito_doy_start` through `r params$mosquito_doy_end`. The mosquito infection rate modeling is very sensitive to early mosquito pool results, which is why a cut-off is used. Sensitivity analyses indicate that a start day of year of 140 is a reasonable cut-off for a high modeling accuracy. 
+
+Modeling was done from `r year_modeling_start` through `r year_modeling_end`. In modeling years where sufficient mosquito data were present, the mosquito infection statistic was created using the model specified in the input parameter: `r mosquito_model_clean`. 
+
+There were `r length(yrs_mir_imputed)` years where mosquito infection rates were imputed. `r if(length(yrs_mir_imputed)>0){paste0("These years are: ", yrs_mir_imputed %>% sort() %>% knitr::combine_words(), ".")}` 
+
+`r if(mir_exactfit){"Years without mosquito data during these years are assumed to have average mosquito infection rates."}` `r if(!mir_exactfit){"Years without mosquito data during these years had mosquito infection rate statistic imputed based on a simple linear model with yearly total human case data."}` This allows us to estimate relationships with environmental data even when mosquito data are not available. 
+
+In the forecast year to date, there were `r dx_mosq_nrow_fcyr` pools reported from `r dx_mosq_counties_fcyr` counties. Of these pools, `r mosq_pos_num_fcyr` (`r round_any(mosq_pos_perc_fcyr, 1)`%) were reported WNV positive. 
+
+Pool statistics for the past two weeks are also included. If pool data exists for the forecast epiweek, then the two weeks will be the forecast week and the week prior. If data does not exist yet for the requested forecast epiweek, then the weeks shown will be the two epiweeks prior to the forecast week. In this report, the two weeks are `r mosq_2wks_dts_str` (epiweeks `r lubridate::epiweek(mosq_2wks_dts[1])` & `r lubridate::epiweek(mosq_2wks_dts[2])`) with mosquito data existing between `r mosq_2wks_dat_dts_str`.
+
+
+```{r mosquito_pools_2wks, echo=FALSE, include=TRUE, fig.align='center', out.width="90%"}
+
+#Creates summaries of the input mosquito data: first 2 of 4 parts
+# 1. Map of the positive pools in last 2 weeks, differentiating between non-reporting and 0 positive pools. Note: 2 weeks asked for in multi-state meeting.
+# 2. Table of count of pos & neg pools: last 2 weeks & year to date (year to and including forecast week)
+# 3. Vector pool positive rate timeseries with year comparisons
+# 4. Relative risk due to vector infection rate
+
+## Data for past 2 weeks
+# "past two weeks" was the request. 
+# If data exists in the current forecast epiweek, then 'past two' will be last epiweek and this epiweek. 
+# If data does NOT exist in the current forecast epiweek, then 'past two' will the two epiweeks PRIOR to this week (no data checks, at the moment)
+
+
+## 1. Map of mosquito pools last 2 weeks
+
+#summarize by county
+data_m2wk_sum <- data_mosq_2wk %>% 
+  dplyr::group_by(arbo_ID) %>% 
+  dplyr::summarise(pools_count = n(),
+                   pools_pos = sum(wnv_result)) %>% 
+  #turn into a factor for legend with NA level
+  dplyr::mutate(pools_pos_disp = factor(pools_pos),
+                pools_pos_disp = factor(pools_pos_disp, 
+                                        levels = rev(levels(pools_pos_disp)))) %>% 
+  # add in non-reporting counties (for these two weeks) via RIGHT join
+  dplyr::right_join(data_sf %>% 
+                      sf::st_drop_geometry(),
+                    by = "arbo_ID") %>% 
+  dplyr::mutate(pools_pos_disp = forcats::fct_explicit_na(pools_pos_disp,
+                                                          na_level = "No pools reported"))
+
+#join to sf data
+sf_mosq2wk <- data_sf %>% 
+  dplyr::left_join(data_m2wk_sum, by = "arbo_ID")
+
+#map
+p_map_mosq2wk <- ggplot() +
+  geom_sf(data = sf_mosq2wk,
+          aes(fill = pools_pos_disp)) +
+  #some interesting convolutions to get no-pool counties to show up in grey with special label
+  scale_fill_manual("Positive pools",
+                    values = c(
+                      #colors for values (number of factors minus 1)
+                      viridis::viridis_pal(option = "magma")(nlevels(data_m2wk_sum$pools_pos_disp) - 1),
+                      #na color
+                      "grey80")) +
+  ggtitle(paste0("Count of WNV positive mosquito pools in past two weeks"),
+          subtitle = paste0("Date range: ", mosq_2wks_dts_str)) +
+  theme_arbo_map
+
+
+#no highlight
+if (!highlight_flag){
+  
+plot(p_map_mosq2wk)
+
+} else if (highlight_flag){
+  
+  #If highlight counties, create an altered map & table
+  # only non-masking highlight here, even if mask
+  
+  sf_highlight <- sf_mosq2wk %>%
+    #ONLY include highlighted counties
+    dplyr::filter(arbo_ID %in% highlight_ids)
+  
+  p_map_mosq2wk_hl <- p_map_mosq2wk +
+    geom_sf(data = sf_highlight,
+            aes(color = "Highlighted counties"),
+            size = 1,
+            #let the original colors through
+            fill = NA) +
+    scale_color_manual("",
+                       values = c("Highlighted counties" = "blue")) +
+    #make sure original color bar is at top
+    guides(fill = guide_legend(order = 1))
+  
+  plot(p_map_mosq2wk_hl)
+  
+} #end if highlight
+
+
+## 2. Table of positive pools
+# attempting YEAR & 2 weeks
+# join yr and wk
+# need to keep rows in EITHER, so full join
+data_mosq_yr2wk_full <- data_mosquito %>% 
+  #filter to forecast epiyear and up to this forecast week
+  filter(year_epi == epiyear_request &
+           week_epi <= epiweek_request) %>% 
+  #summarize to county
+  dplyr::group_by(arbo_ID) %>% 
+  dplyr::summarise(pools_count_yr = n(),
+                   pools_pos_yr = sum(wnv_result)) %>%
+  dplyr::mutate(pools_pos_yr_perc = pools_pos_yr / pools_count_yr * 100) %>% 
+  #full join with 2 week summary
+  dplyr::full_join(data_mosq_2wk %>% 
+                     dplyr::group_by(arbo_ID) %>% 
+                     dplyr::summarise(pools_count = n(),
+                                      pools_pos = sum(wnv_result)) %>% 
+                     dplyr::mutate(pools_pos_perc = pools_pos / pools_count * 100),
+                   by = "arbo_ID") %>% 
+  #make pretty % for table
+  dplyr::mutate(pools_pos_perc_pretty = if_else(is.na(pools_pos_perc), 
+                                                NA_character_, 
+                                                round(pools_pos_perc, digits = 1) %>% 
+                                                  paste0("%")),
+                pools_pos_yr_perc_pretty = if_else(is.na(pools_pos_yr_perc),
+                                                   NA_character_,
+                                                   round(pools_pos_yr_perc, digits = 1) %>% 
+                                                    paste0("%")),
+                pools_pos_comb = if_else(is.na(pools_pos), 
+                                         NA_character_,
+                                         paste0(pools_pos, " (", pools_pos_perc_pretty, ")")),
+                pools_pos_yr_comb = if_else(is.na(pools_pos_yr), 
+                                                  NA_character_,
+                                                  paste0(pools_pos_yr, " (", pools_pos_yr_perc_pretty, ")")))
+
+
+data_mosq_yr2wk <- data_mosq_yr2wk_full %>% 
+  #filter out ones with none in past 2 weeks, and no pos YTD
+  # so filter that pools_count has a value OR pools_pos_yr > 0
+  dplyr::filter(!is.na(pools_count) | pools_pos_yr > 0) %>%
+  #join with crosswalk to get pretty names
+  dplyr::left_join(id_crosswalk, by = "arbo_ID") %>%
+  #select columns for table
+  dplyr::select(NAME,
+                pools_count, pools_pos_comb,
+                pools_count_yr, pools_pos_yr_comb) %>%
+  dplyr::arrange(NAME)
+
+
+#conditionally appearing table if data exists
+if (nrow(data_mosq_yr2wk) > 0){
+  
+  knitr::kable(data_mosq_yr2wk,
+               col.names = c("County",
+                             "Pools reported last 2 weeks", "Pools positive last 2 weeks (%)",
+                             "Pools reported YTD", "Pools positive YTD (%)"),
+               digits = 1,
+               align = c("l", "c", "c", "c", "c"),
+               caption = "Total reported and WNV mosquito pools: Counties with positive pools in year to forecast week (YTD) or reported any (positive or negative) pools in past two weeks")
+
+  #kableExtra::column_spec(column = 2:7, width = "1.7cm")
+
+}
+
+# #optional additional highlight table
+if (highlight_flag){
+
+  data_mosq_yr2wk_hl <- data_mosq_yr2wk_full %>%
+    #get only highlight counties
+    dplyr::filter(arbo_ID %in% highlight_ids) 
+  
+  #add NA entries for any highlight counties that do not have data for this year yet
+  hl_na_ids <- highlight_ids[!highlight_ids %in% data_mosq_yr2wk_hl$arbo_ID]
+    
+  data_mosq_yr2wk_hl <- data_mosq_yr2wk_hl %>% 
+    dplyr::bind_rows(tibble(arbo_ID = hl_na_ids))
+  
+  knitr::kable(data_mosq_yr2wk_hl %>%
+                 #join with crosswalk to get pretty names
+                 dplyr::left_join(id_crosswalk, by = "arbo_ID") %>%
+                 #select columns for table
+                 dplyr::select(NAME,
+                               pools_count, pools_pos_comb,
+                               pools_count_yr, pools_pos_yr_comb) %>%
+                 dplyr::arrange(NAME),
+               col.names = c("County",
+                             "Pools reported last 2 weeks", "Pools positive last 2 weeks (%)",
+                             "Pools reported YTD", "Pools positive YTD (%)"),
+               digits = 1,
+               align = c("l", "c", "c", "c", "c"),
+               caption = "Total reported and WNV mosquito pools for the past two weeks and year to date for highlighted counties")
+
+  #    kableExtra::column_spec(column = 2:7, width = "1.7cm")
+  
+
+} #end if highlight
+
+```
+
+
+```{r pospool_setup, echo=FALSE, include=TRUE}
+#The mosquito positive pool rate graph can either be:
+# one singular graph (nonstratified)
+# OR a faceted graph (stratified)
+
+if (mosquito_model_clean %in% mosq_nonstrat_models){
+  poolpos_height <- 2.5
+} else {
+  #default Rmarkdown height
+  poolpos_height <- 5
+}
+
+#must be set up before use in narrative
+#Will be dynamic number of bins, up to mosq_bins_max. 
+# Should have at least mosq_min_col_per_bin collection dates of data per bin
+mosq_bins_max <- 6
+mosq_min_col_per_bin <- 3
+
+```
+
+`r if (!mosquito_model_clean == "simpleratio"){paste0("The next graph shows the percentage of predicted positive pools by year comparing the forecast year (in ", colorize("red", "red"), ") to the requested comparison years (shades of blue) and all other years (gray). If there is sufficient data in the forecast year, the observed pools rates are shown as black dots, binned into a variable number of different time points (up to ", mosq_bins_max, ") depending on how much data is available.")}`
+
+<!-- The next graph shows the percentage of predicted positive pools by year comparing the forecast year (in `r colorize("red", "red")`) to the requested comparison years (shades of blue) and all other years (gray). If there is sufficient data in the forecast year, the observed pools rates are shown as black dots, binned into a variable number of different time points (up to `r mosq_bins_max`) depending on how much data is available. -->
+
+```{r mosquito_pools_posrate, out.width="100%", fig.height = poolpos_height, echo=FALSE, include=TRUE}
+
+#Creates summaries of the input mosquito data: part 3 of 4 parts
+# 1. Map of the positive pools in last 2 weeks, differentiating between non-reporting and 0 positive pools. Note: 2 weeks asked for in multi-state meeting.
+# 2. Table of count of pos & neg pools: last 2 weeks & year to date (year to and including forecast week)
+# 3. Vector pool positive rate timeseries with year comparisons
+# 4. Relative risk due to vector infection rate
+
+## 3. Vector pool positive rate timeseries with year comparisons
+# creates doy-based predictions using MIR regression object [V3] [DMN]
+# single graph for non-stratified mosquito models
+# graph per stratum for stratified mosquito models
+
+mosq_pool_colors <- c("endyear" = "red",
+                      "comp1" = "blue",
+                      "comp2" = "turquoise4",
+                      "historical" = "grey50")
+mosq_pool_labels <- c("endyear" = "Current year",
+                      "comp1" = params$year_compare_vis1,
+                      "comp2" = params$year_compare_vis2,
+                      "historical" = "Other years")
+
+
+if (mosquito_model_clean %in% c("AUC", "MIGR", "MII")){
+  #this makes no sense for "simpleratio" (also, no mir_glm object)
+  
+  mosq_doy_preds <- tidyr::expand_grid(
+    year_epi = seq(params$year_mosquito_start,
+                   params$year_mosquito_end,
+                   by = 1),
+    doy = seq(min(data_mosquito$doy, na.rm = TRUE),
+              max(data_mosquito$doy, na.rm = TRUE),
+              by = 1)) %>% 
+    #add dminus variable [V3]
+    dplyr::mutate(dminus = doy - mean(.$doy, na.rm = TRUE))
+  
+  #predictions
+  mosq_doy_preds$pred <- predict(mir_glm,
+                                 newdata = mosq_doy_preds %>% 
+                                   as.data.frame(),
+                                 type = "response",
+                                 allow.new.levels = TRUE)
+  
+  #prep for graphing
+  mosq_doy_preds_set <- mosq_doy_preds %>% 
+    # DEV removed, unique rows so does nothing
+    # dplyr::group_by(year_epi, dminus, doy) %>% 
+    # dplyr::summarise(pred_ave = mean(pred, na.rm=TRUE),
+    #                  .groups = "drop") %>% 
+    #flag param max year, param two comparison years for colored lines
+    dplyr::mutate(mosq_col_grp = case_when(
+      year_epi == params$year_mosquito_end ~ "endyear",
+      year_epi == params$year_compare_vis1 ~ "comp1",
+      year_epi == params$year_compare_vis2 ~ "comp2",
+      #all other years
+      TRUE ~ "hx_filter"))
+  
+  #if there are enough values in endyear (doy-filtered) 
+  data_mosq_endyr <- data_mosquito %>% 
+    dplyr::filter(year_epi == params$year_mosquito_end)
+  mosq_col_dts_count <- data_mosq_endyr$doy %>% unique() %>% length()
+  
+  #dynamic mosq bins
+  #Will be dynamic number of bins, up to mosq_bins_max. 
+  # Should have at least mosq_min_col_per_bin collection dates of data per bin
+  mosq_bins = min(floor(mosq_col_dts_count / mosq_min_col_per_bin), mosq_bins_max)
+  
+  # then we will also add dots along the line
+  # [V3] used rows > 20, but rather non-rigorous 
+  # edge case discovered when only 1 collection date
+  # So changed to dynamic bin numbers, and 0 means too few data points [DMN]
+  if (mosq_bins > 0){
+
+    #note, using data_mosquito, showing actual positive sample rate
+    end_year_dot <- data_mosq_endyr %>%
+      #make 6 [V3] groups
+      dplyr::mutate(doy_grp = ggplot2::cut_interval(doy, n = mosq_bins)) %>%
+      #summarize by these dot groups
+      # grouping observations nearby in time together [DMN]
+      dplyr::group_by(doy_grp) %>%
+      dplyr::summarise(pos_mean = mean(wnv_result, na.rm = TRUE),
+                       doy_mean = mean(doy, na.rm = TRUE),
+                       .groups = "drop")
+  } else {
+    #empty tibble, for if statement in ggplot code
+    end_year_dot <- tibble()
+  } #end data prep if adding dots
+  
+  #plot, with possible dots
+  p_mosq_pool_pos <- ggplot2::ggplot() +
+    #historical (will be all gray)
+    geom_line(data = mosq_doy_preds_set %>% 
+                dplyr::filter(mosq_col_grp == "hx_filter"),
+              aes(x = doy,
+                  y = pred,
+                  group = factor(year_epi),
+                  color = "historical")) +
+    #colored years
+    geom_line(data = mosq_doy_preds_set %>%
+                dplyr::filter(!mosq_col_grp == "hx_filter"),
+              aes(x = doy,
+                  y = pred,
+                  color = mosq_col_grp)) +
+    #potential dots
+    {if (nrow(end_year_dot) > 0){
+      geom_point(data = end_year_dot,
+                 aes(x = doy_mean,
+                     y = pos_mean,
+                     #shape to kick an automatic legend, need to keep color as default black
+                     shape = "observed"))}} +
+    # colors
+    scale_color_manual("",
+                       values = mosq_pool_colors,
+                       labels = mosq_pool_labels) +
+    scale_shape_manual("",
+                       values = c("observed" = 16), #med round circle
+                       labels = c("observed" = "Binned observations\nfor forecast year")) +
+    ylab("Pool positive rate") +
+    xlab("Day of year") +
+    #changing order of legend
+    guides(
+      color = guide_legend(order = 1),
+      shape = guide_legend(order = 2)) +
+    theme_arbo_chart 
+  
+  plot(p_mosq_pool_pos)
+  
+} else if (mosquito_model_clean %in% mosq_strat_models){
+  
+  # by stratum version
+  
+  mosq_doy_preds <- tidyr::expand_grid(
+    stratum_year = rownames(nlme::random.effects(mir_glm)$stratum_year),
+    doy = seq(min(data_mosquito$doy, na.rm = TRUE),
+              max(data_mosquito$doy, na.rm = TRUE),
+              by = 1)) %>%
+    #add dminus variable [V3]
+    dplyr::mutate(dminus = doy - mean(.$doy, na.rm = TRUE))
+
+  #predictions
+  mosq_doy_preds$pred <- predict(mir_glm,
+                                 newdata = mosq_doy_preds %>%
+                                   as.data.frame(),
+                                 type = "response",
+                                 allow.new.levels = TRUE)
+
+  #prep for graphing
+  mosq_doy_preds_set <- mosq_doy_preds %>%
+        #split stratum and year back out
+      dplyr::mutate(year_epi = stringr::str_split_fixed(stratum_year, "_", n = 2)[,2],
+                    strata = stringr::str_split_fixed(stratum_year, "_", n = 2)[,1],
+                    #convert year back to numeric
+                    year_epi = as.numeric(year_epi),
+                    #need to convert strata back to whatever data type as in data_strata
+                    #    in example is dbl for '101'. But could conceivably be numeric or string
+                    strata = as(strata, class(data_strata$strata))) %>%
+    # # summarize by stratum, year & dminus # DEV - removed, does nothing, unique rows
+    # dplyr::group_by(strata, year_epi, dminus, doy) %>%
+    # dplyr::summarise(pred_ave = mean(pred, na.rm=TRUE),
+    #                  .groups = "drop") %>%
+    #flag param max year, param two comparison years for colored lines
+    dplyr::mutate(mosq_col_grp = case_when(
+      year_epi == params$year_mosquito_end ~ "endyear",
+      year_epi == params$year_compare_vis1 ~ "comp1",
+      year_epi == params$year_compare_vis2 ~ "comp2",
+      #all other years
+      TRUE ~ "hx_filter"))
+
+  # loop per model
+  # the test for sufficient data must be done per stratum
+  strata_list <- data_strata %>% 
+    dplyr::pull(strata) %>% unique() %>% sort()
+  #collector for plots to arrange later
+  ps_mosq_strata <- list()
+  for (i in seq_along(strata_list)){
+    
+    this_strata <- strata_list[[i]]
+    
+    this_mosq_doy_preds_set <- mosq_doy_preds_set %>% 
+      dplyr::filter(strata == this_strata)
+    
+    this_data_mosq_endyr <- data_mosquito %>%
+      dplyr::filter(strata == this_strata,
+                    year_epi == params$year_mosquito_end)
+    
+    #dynamic mosq bins, up to mosq_bins_max. 
+    # Should have at least mosq_min_col_per_bin collection dates of data per bin
+    this_mosq_col_dts_count <- this_data_mosq_endyr$doy %>% unique() %>% length()
+    this_mosq_bins = min(floor(this_mosq_col_dts_count / mosq_min_col_per_bin), mosq_bins_max)
+  
+    # then we will also add dots along the line
+    # [V3] used rows > 20, but rather non-rigorous 
+    # edge case discovered when only 1 collection date
+    # So changed to dynamic bin numbers, and 0 means too few data points [DMN]
+    if (this_mosq_bins > 0){
+      
+      #note, using data_mosquito, showing actual positive sample rate
+      this_end_year_dot <- this_data_mosq_endyr %>%
+        #make 6 [V3] groups
+        dplyr::mutate(doy_grp = ggplot2::cut_interval(doy, n = this_mosq_bins)) %>%
+        #summarize by these dot groups
+        # grouping observations nearby in time together [DMN]
+        dplyr::group_by(doy_grp) %>%
+        dplyr::summarise(pos_mean = mean(wnv_result, na.rm = TRUE),
+                         doy_mean = mean(doy, na.rm = TRUE),
+                         .groups = "drop")
+    } else {
+      #empty tibble, for if statement in ggplot code
+      this_end_year_dot <- tibble()
+    } #end data prep if adding dots
+    
+    #plot, with possible dots
+    ps_mosq_strata[[i]] <- ggplot2::ggplot() +
+      #historical (will be all gray)
+      geom_line(data = this_mosq_doy_preds_set %>%
+                  dplyr::filter(mosq_col_grp == "hx_filter"),
+                aes(x = doy,
+                    y = pred,
+                    group = factor(year_epi),
+                    color = "historical")) +
+      #colored years
+      geom_line(data = this_mosq_doy_preds_set %>%
+                  dplyr::filter(!mosq_col_grp == "hx_filter"),
+                aes(x = doy,
+                    y = pred,
+                    color = mosq_col_grp)) +
+      #potential dots
+      {if (nrow(this_end_year_dot) > 0){
+        geom_point(data = this_end_year_dot,
+                   aes(x = doy_mean,
+                       y = pos_mean,
+                       #shape to kick an automatic legend, need to keep color as default black
+                       shape = "observed"))}} +
+      # colors
+      scale_color_manual("",
+                         values = mosq_pool_colors,
+                         labels = mosq_pool_labels) +
+      scale_shape_manual("",
+                         values = c("observed" = 16), #med round circle
+                         labels = c("observed" = "Binned observations\nin forecast year")) +
+      #ggtitle("Vector pool positive rate predictions") +
+      ggtitle(paste0("Strata: ", this_strata)) +
+      ylab("Pool positive rate") +
+      xlab("Day of year") +
+      #changing order of legend
+      guides(
+        color = guide_legend(order = 1),
+        shape = guide_legend(order = 2)) +
+      theme_arbo_chart
+    
+  } #end per strata loop
+  
+  #organizes multiple plots with common legend
+  ggpubr::ggarrange(plotlist = ps_mosq_strata, 
+                    common.legend = TRUE, legend = "bottom")
+
+} # end else strata models 
+```
+
+The last mosquito graph shows the relative risk due to the mosquito infection rate as a time-series of all known years. `r if (mosquito_model_clean %in% mosq_strat_models){"Mosquito strata are shown in different colors."}`
+
+```{r mosquito_pools_relrisk, out.width="100%", echo=FALSE, include=TRUE, fig.height=3}
+
+#Creates summaries of the input mosquito data: part 4 of 4 parts
+# 1. Map of the positive pools in last 2 weeks, differentiating between non-reporting and 0 positive pools. Note: 2 weeks asked for in multi-state meeting.
+# 2. Table of count of pos & neg pools: last 2 weeks & year to date (year to and including forecast week)
+# 3. Vector pool positive rate timeseries with year comparisons
+# 4. Relative risk due to vector infection rate
+
+## 4. Relative risk due to vector infection rate
+
+if (mosquito_model_clean %in% mosq_nonstrat_models) {
+  
+  p_mosq_rel_risk <- ggplot2::ggplot() +
+    # line at 0 (average risk of centered MIR stat)
+    geom_abline(slope = 0, intercept = 0, linetype = 2) +
+    #MIR stats
+    geom_line(data = mir_full,
+              aes(x = year_epi,
+                  y = mir_stat)) +
+    # plot themes and display
+    # with MIR imputation, series runs for all modeling years
+    scale_x_continuous(breaks = seq(from = year_modeling_start,
+                                    to = year_modeling_end,
+                                    by = 1)) +
+    ggtitle("Relative risk due to mosquito infection rate") +
+    xlab("") +
+    ylab("Relative risk") +
+    theme_arbo_chart +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  
+} else if (mosquito_model_clean %in% mosq_strat_models){
+  
+  p_mosq_rel_risk <- ggplot2::ggplot() +
+    # line at 0 (average risk of centered MIR stat)
+    geom_abline(slope = 0, intercept = 0, linetype = 2) +
+    #MIR stats
+    geom_line(data = mir_full,
+              aes(x = year_epi,
+                  y = mir_stat,
+                  #strata
+                  color = factor(strata)),
+              size = 0.7) +
+    # plot themes and display
+    scale_color_viridis("Stratum",
+                        option = "turbo",
+                        discrete = TRUE,
+                        #limit spectrum b/c dark red/purple looks like black
+                        begin = 0.1, end = 0.9) +
+    # with MIR imputation, series runs for all modeling years
+    scale_x_continuous(breaks = seq(from = year_modeling_start,
+                                    to = year_modeling_end,
+                                    by = 1)) +
+    ggtitle("Relative risk due to mosquito infection rate") +
+    xlab("") +
+    ylab("Relative risk") +
+    theme_arbo_chart +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+} #end else strata models
+
+plot(p_mosq_rel_risk)
+
+```
+
+\newpage
+## Weather
+
+After processing, weather data existed from `r min(data_env$date_obs, na.rm = TRUE)` through `r max(data_env$date_obs, na.rm = TRUE)` for `r data_env$arbo_ID %>% unique() %>% length()` counties. Environmental data are read and collated from all files in the base `data_weather` folder and if there are duplicate data entries for any particular day, the value from the latest file is used (i.e. the latest updated value). 
+
+Parameters were set to include weather data from `r params$year_weather_start` through `r params$year_weather_end`.
+<!-- `r if(length(env_yrs_missing) == 0){paste0("Data from all years were found in the data file. ")}` -->
+<!-- `r if(length(env_yrs_missing) > 0){paste0("The following years were not found in the dataset:", env_yrs_missing %>% sort() %>% stringr::str_c(collapse=", "), ". ")}` -->
+`r if(length(env_missing_dates) == 0){paste0("All necessary weather data were found in the data file. ")}`
+`r if(length(env_missing_dates) > 0){paste0("ArboMAP used weather data from ", env_mod_date_start, ", which is the environmental lag length days (", params$lag_length, ") prior to the start of the modeling period, ", env_mod_yr_jan1, ", through the forecast date. The following days were not found in the dataset: ", env_missing_dates %>% sort() %>% knitr::combine_words(), ". Missing dates, e.g. recent dates that are not yet available are filled in with the historical mean for that day of year.")}`
+
+The report parameters set the two environmental predictor variables as `r params$predictor_var1` and `r params$predictor_var2`. The following two graphs show the median state-wide observed weather variables for the forecast year, compared to the historical median. Two or more consecutive days that are **greater than** the historical median are drawn in `r colorize("red", "red")` and consecutive days that are **less than** the historical median are drawn in `r colorize("blue", "blue")`. Consecutive days that overlap the historical median (i.e. one day above and the next below, or the opposite) are in purple. The gray shaded region is a ribbon showing the historical range (min to max). `r if(params$create_appendix){"The appendix will show the anomaly graphs (same timeseries, but the weather variable has been anomalized)."}`
+
+```{r weather_charts, echo=FALSE, include=TRUE, fig.align='center', fig.height=c(4,4), fig.width=c(7,7)}
+
+#Create environmental data plots for the current year 
+#   with historical doy information in background
+# [V3] used medians, so retained in [V4]
+
+# historical data - state-wide 
+#   as opposed to by county data_env_hx
+data_env_doy <- data_env %>% 
+  #summarize to state
+  dplyr::group_by(doy) %>% 
+  dplyr::summarise(            
+    #medians
+    !!rlang::sym(paste0(params$predictor_var1, 
+                        "_med")) := quantile(!!rlang::sym(params$predictor_var1),
+                                             probs = 0.5, na.rm = TRUE),
+    !!rlang::sym(paste0(params$predictor_var2,
+                        "_med")) := quantile(!!rlang::sym(params$predictor_var2),
+                                             probs = 0.5, na.rm = TRUE),
+    #mins
+    !!rlang::sym(paste0(params$predictor_var1, 
+                        "_min")) := min(!!rlang::sym(params$predictor_var1),
+                                        na.rm = TRUE),
+    !!rlang::sym(paste0(params$predictor_var2,
+                        "_min")) := min(!!rlang::sym(params$predictor_var2),
+                                        na.rm = TRUE),
+    #maxs
+    !!rlang::sym(paste0(params$predictor_var1, 
+                        "_max")) := max(!!rlang::sym(params$predictor_var1),
+                                        na.rm = TRUE),
+    !!rlang::sym(paste0(params$predictor_var2,
+                        "_max")) := max(!!rlang::sym(params$predictor_var2),
+                                        na.rm = TRUE))
+
+# this year data - state-wide
+data_env_fc_yr <- data_env %>%
+  # graphs are by calendar year
+  #note calendar year to prevent end of year values from ending up in 'this' year
+  dplyr::filter(year == epiyear_request) %>% 
+  #summarize to state using medians
+  dplyr::group_by(doy) %>% 
+  dplyr::summarise(            
+    !!rlang::sym(paste0(params$predictor_var1, 
+                        "_med_yr")) := quantile(!!rlang::sym(params$predictor_var1),
+                                                probs = 0.5, na.rm = TRUE),
+    !!rlang::sym(paste0(params$predictor_var2,
+                        "_med_yr")) := quantile(!!rlang::sym(params$predictor_var2),
+                                                probs = 0.5, na.rm = TRUE))
+
+if (dev_write_output){
+  readr::write_csv(data_env_doy, file = file.path(out_folder, paste0(out_name_base, "_data_env_doy.csv")))
+  readr::write_csv(data_env_fc_yr, file = file.path(out_folder, paste0(out_name_base, "_data_env_fc_yr.csv")))
+}
+
+
+#Colored segments for above/below median
+env_comp_colors <- c("Higher" = "red",
+                     "Overlaps" = "#776489", #gray-purple, neutral color
+                     "Lower" = "blue2",
+                     "Historical median" = "gray20")
+#pasted median names for ease
+var1_med_name <- paste0(params$predictor_var1, "_med")
+var2_med_name <- paste0(params$predictor_var2, "_med")
+
+
+# only plot IF there is data for the forecast year
+#  there SHOULD be, but the if will prevent the report from throwing error
+#  and failing to finish b/c of these graphs
+
+if (nrow(data_env_fc_yr) > 0){
+
+  # calculate flag field for the different colors to data
+  data_env_colors <- data_env_fc_yr %>% 
+    #right join to get historical medians even when there is no observed data for the current year
+    dplyr::right_join(data_env_doy %>% 
+                       dplyr::select(doy, ends_with("_med")),
+                     by = "doy") %>% 
+    #line segments are drawn x to xend, y to yend
+    # going to do day by day: x segments are doy to doy+1
+    #   y segments are value + lead(1) value
+    dplyr::mutate(var_x = doy, 
+                  var_xend = dplyr::lead(var_x, n = 1),
+                  var1_y = !!rlang::sym(paste0(params$predictor_var1, "_med_yr")),
+                  var1_yend = dplyr::lead(var1_y, n = 1),
+                  var2_y =  !!rlang::sym(paste0(params$predictor_var2, "_med_yr")),
+                  var2_yend = dplyr::lead(var2_y, n = 1)) %>% 
+    #now flag if y - yend is above, below, or overlaps with historical median
+    dplyr::mutate(
+      #var1
+      color_var1 = case_when(
+        var1_y >= !!rlang::sym(var1_med_name) & 
+          var1_yend >= !!rlang::sym(var1_med_name) ~ "Higher",
+        var1_y >= !!rlang::sym(var1_med_name) & 
+          var1_yend <= !!rlang::sym(var1_med_name) ~ "Overlaps",
+        var1_y <= !!rlang::sym(var1_med_name) & 
+          var1_yend >= !!rlang::sym(var1_med_name) ~ "Overlaps",
+        var1_y <= !!rlang::sym(var1_med_name) & 
+          var1_yend <= !!rlang::sym(var1_med_name) ~ "Lower",
+        TRUE ~ "forgotsomething"),
+      #var2
+      color_var2 = case_when(
+        var2_y >= !!rlang::sym(var2_med_name) & 
+          var2_yend >= !!rlang::sym(var2_med_name) ~ "Higher",
+        var2_y >= !!rlang::sym(var2_med_name) & 
+          var2_yend <= !!rlang::sym(var2_med_name) ~ "Overlaps",
+        var2_y <= !!rlang::sym(var2_med_name) & 
+          var2_yend >= !!rlang::sym(var2_med_name) ~ "Overlaps",
+        var2_y <= !!rlang::sym(var2_med_name) & 
+          var2_yend <= !!rlang::sym(var2_med_name) ~ "Lower",
+        TRUE ~ "forgotsomething")) %>% 
+    #lead(1) does not exist for last day in environmental data, so removing improper last entry
+    dplyr::filter(!doy == max(data_env_fc_yr))
+  
+  #plots
+  p_env_var1_color <- ggplot() + 
+    # min/max ribbon using wide data
+    geom_ribbon(data = data_env_doy, 
+                aes(x = doy, 
+                    ymin = !!rlang::sym(paste0(params$predictor_var1, "_min")), 
+                    ymax = !!rlang::sym(paste0(params$predictor_var1, "_max")),
+                    fill = "minmax")) +
+    #historical median series
+    geom_line(data = data_env_colors,
+              aes(x = doy, 
+                  y = !!rlang::sym(var1_med_name),
+                  color = "Historical median")) +
+    #line segment for year median with different colors
+    geom_segment(data = data_env_colors,
+                 aes(x = var_x, xend = var_xend,
+                     y = var1_y, yend = var1_yend,
+                     color = color_var1),
+                 size = 0.9) +
+    #vertical line at the doy of requested date #linetype inside of aes to trigger legend
+    geom_vline(aes(xintercept = doy_dt_epiwk_req, linetype = "forecast_doy"), color = "grey50") +
+    #scales
+    scale_fill_manual("",
+                      values = c("minmax" = "grey80"),
+                      labels = "Range over all years") +
+    scale_linetype_manual("",
+                          values = c("forecast_doy" = "dashed"),
+                          labels = paste0("Day of year of requested\nforecast date: ", doy_dt_epiwk_req)) +
+    scale_color_manual("Forecast year median\ncompared to historical median", 
+                       values = env_comp_colors) +
+    xlab("Day of the year") + 
+    ylab(params$predictor_var1) +
+    ggtitle(paste("Environmental data for", params$predictor_var1, 
+                  "in", max(data_env$year_epi, na.rm=TRUE))) +
+    theme_arbo_chart +
+    theme(legend.position="bottom", 
+          #legend gets cut off so multiple rows across various aesthetics
+          legend.box="horizontal", 
+          legend.direction = "vertical",
+          #compact
+          legend.margin = margin(),
+          legend.key.height = unit(0.15, 'in')) +
+    #changing order of legend
+    guides(
+      color = guide_legend(order = 1),
+      linetype = guide_legend(order = 3),
+      fill = guide_legend(order = 2))
+  
+  p_env_var2_color <- ggplot() + 
+    # min/max ribbon using wide data
+    geom_ribbon(data = data_env_doy, 
+                aes(x = doy, 
+                    ymin = !!rlang::sym(paste0(params$predictor_var2, "_min")), 
+                    ymax = !!rlang::sym(paste0(params$predictor_var2, "_max")),
+                    fill = "minmax")) +
+    #historical median series
+    geom_line(data = data_env_colors,
+              aes(x = doy, 
+                  y = !!rlang::sym(var2_med_name),
+                  color = "Historical median")) +
+    #line segment for year median with different colors
+    geom_segment(data = data_env_colors,
+                 aes(x = var_x, xend = var_xend,
+                     y = var2_y, yend = var2_yend,
+                     color = color_var2),
+                 size = 0.9) +
+    #vertical line at the doy of requested date #linetype inside of aes to trigger legend
+    geom_vline(aes(xintercept = doy_dt_epiwk_req, linetype = "forecast_doy"), color = "grey50") +
+    #scales
+    scale_fill_manual("",
+                      values = c("minmax" = "grey80"),
+                      labels = "Range over all years") +
+    scale_linetype_manual("",
+                          values = c("forecast_doy" = "dashed"),
+                          labels = paste0("Day of year of requested\nforecast date: ", doy_dt_epiwk_req)) +
+    scale_color_manual("Forecast year median\ncompared to historical median", 
+                       values = env_comp_colors) +
+    xlab("Day of the year") + 
+    ylab(params$predictor_var2) +
+    ggtitle(paste("Environmental data for", params$predictor_var2, 
+                  "in", max(data_env$year_epi, na.rm=TRUE))) +
+    theme_arbo_chart +
+    theme(legend.position="bottom", 
+          #legend gets cut off so multiple rows across various aesthetics
+          legend.box="horizontal", 
+          legend.direction = "vertical",
+          #compact
+          legend.margin = margin(),
+          legend.key.height = unit(0.15, 'in')) +
+    #changing order of legend
+    guides(
+      color = guide_legend(order = 1),
+      linetype = guide_legend(order = 3),
+      fill = guide_legend(order = 2))
+  
+  plot(p_env_var1_color)
+  plot(p_env_var2_color)
+  
+} #end if data_env_fc_yr has data
+
+
+# # [DEV] Original style graphs
+# #some manipulation to get all line series in one long dataset for ggplot2
+# data_env_plotlines <- data_env_fc_yr %>%
+#   dplyr::left_join(data_env_doy %>%
+#                      dplyr::select(doy, ends_with("_med")),
+#                    by = "doy") %>%
+#   #make long
+#   tidyr::pivot_longer(cols = c(contains("_med")),
+#                       names_to = "env_var",
+#                       values_to = "value")
+# 
+# #colors, sizes, and labels of dynamic names
+# env1_colors <- c("black", "red2")
+# names(env1_colors) <- c(paste0(params$predictor_var1, "_med"), paste0(params$predictor_var1, "_med_yr"))
+# env2_colors <- c("black", "red2")
+# names(env2_colors) <- c(paste0(params$predictor_var2, "_med"), paste0(params$predictor_var2, "_med_yr"))
+# 
+# env1_sizes <- c(0.8, 1.1)
+# names(env1_sizes) <- c(paste0(params$predictor_var1, "_med"), paste0(params$predictor_var1, "_med_yr"))
+# env2_sizes <- c(0.8, 1.1)
+# names(env2_sizes) <- c(paste0(params$predictor_var2, "_med"), paste0(params$predictor_var2, "_med_yr"))
+# 
+# env1_labels <- c("Historical median", "Year median")
+# names(env1_labels) <- c(paste0(params$predictor_var1, "_med"), paste0(params$predictor_var1, "_med_yr"))
+# env2_labels <- c("Historical median", "Year median")
+# names(env2_labels) <- c(paste0(params$predictor_var2, "_med"), paste0(params$predictor_var2, "_med_yr"))
+# 
+# #plot
+# p_env_var1 <- ggplot() +
+#   # min/max ribbon using wide data
+#   geom_ribbon(data = data_env_doy,
+#               aes(x = doy,
+#                   ymin = !!rlang::sym(paste0(params$predictor_var1, "_min")),
+#                   ymax = !!rlang::sym(paste0(params$predictor_var1, "_max")),
+#                   fill = "minmax")) +
+#   #series
+#   geom_line(data = data_env_plotlines %>%
+#               #filter to this variable
+#               dplyr::filter(grepl(params$predictor_var1, env_var)),
+#             aes(x = doy,
+#                 y = value,
+#                 color = env_var,
+#                 size = env_var)) +
+#   #vertical line at the doy of requested date #linetype inside of aes to trigger legend
+#   geom_vline(aes(xintercept = doy_dt_epiwk_req, linetype = "forecast_doy"), color = "grey50") +
+#   #scales
+#   scale_fill_manual("",
+#                     values = c("minmax" = "grey80"),
+#                     labels = "Range over all years") +
+#   scale_color_manual("",
+#                      values = env1_colors,
+#                      labels = env1_labels) +
+#   scale_size_manual("",
+#                     values = env1_sizes,
+#                     labels = env1_labels) +
+#   scale_linetype_manual("",
+#                         values = c("forecast_doy" = "dashed"),
+#                         labels = paste0("Day of year of requested\nforecast date: ", doy_dt_epiwk_req)) +
+#   xlab("Day of the year") +
+#   ylab(params$predictor_var1) +
+#   ggtitle(paste("Environmental data for", params$predictor_var1,
+#                 "in", max(data_env$year_epi, na.rm=TRUE))) +
+#   theme_arbo_chart +
+#   theme(legend.position = "none") #shown in second graph
+# 
+# 
+# p_env_var2 <- ggplot() +
+#   # min/max ribbon using wide data
+#   geom_ribbon(data = data_env_doy,
+#               aes(x = doy,
+#                   ymin = !!rlang::sym(paste0(params$predictor_var2, "_min")),
+#                   ymax = !!rlang::sym(paste0(params$predictor_var2, "_max")),
+#                   fill = "minmax")) +
+#   #series
+#   geom_line(data = data_env_plotlines %>%
+#               #filter to this variable
+#               dplyr::filter(grepl(params$predictor_var2, env_var)),
+#             aes(x = doy,
+#                 y = value,
+#                 color = env_var,
+#                 size = env_var)) +
+#   #vertical line at the doy of requested date #linetype inside of aes to trigger legend
+#   geom_vline(aes(xintercept = doy_dt_epiwk_req, linetype = "forecast_doy"), color = "grey50") +
+#   #scales
+#   scale_fill_manual("",
+#                     values = c("minmax" = "grey80"),
+#                     labels = "Range over all years") +
+#   scale_color_manual("",
+#                      values = env2_colors,
+#                      labels = env2_labels) +
+#   scale_size_manual("",
+#                     values = env2_sizes,
+#                     labels = env2_labels) +
+#   scale_linetype_manual("",
+#                         values = c("forecast_doy" = "dashed"),
+#                         labels = paste0("Day of year of requested\nforecast date: ", doy_dt_epiwk_req)) +
+#   xlab("Day of the year") +
+#   ylab(params$predictor_var2) +
+#   ggtitle(paste("Environmental data for", params$predictor_var2,
+#                 "in", max(data_env$year_epi, na.rm=TRUE))) +
+#   theme_arbo_chart +
+#   theme(legend.position = "bottom")
+# plot(p_env_var1)
+# plot(p_env_var2)
+
+```
+
+
+```{r cond_rotate_ref_map_start, echo=FALSE, results='asis', eval=sf_wider}
+#rotating page if map is wider than it is tall
+cat("\\blandscape")
+```
+```{r cond_newpage_ref_map_start, echo=FALSE, results='asis', eval=sf_taller}
+#if NOT rotating page, still want to start on a newpage
+cat("\\newpage")
+```
+
+## Reference map
+
+For `r params$state_name`, the spatial data (shapefile) contained `r unique(data_sf$arbo_ID) %>% length()` counties: `r unique(data_sf$NAME) %>% sort() %>% knitr::combine_words()`
+
+```{r reference_map, echo=FALSE, include=TRUE, fig.align='center', fig.width=ref_map_width, fig.height=ref_map_height, out.width='100%'}
+#Creates a reference map of county names
+
+#first, get good locations to put labels
+#calculate better centroids | point on surface 
+#https://stackoverflow.com/questions/52522872/r-sf-package-centroid-within-polygon
+st_centroid_within_poly <- function(poly){
+  
+  # check if centroid is in polygon
+  ctrd <- st_centroid(poly, of_largest_polygon = TRUE)
+  in_poly <- diag(st_within(ctrd, poly, sparse = F))
+  
+  if (in_poly){
+    return(ctrd)
+  }
+  
+  ## For points that were not within polygon get st_point_on_surface()
+  ctrd_inpoly <- st_point_on_surface(poly)
+}
+#get the best points for labeling
+sf_point_ref <- data_sf %>%
+  mutate(lon = purrr::map_dbl(geometry, ~st_centroid_within_poly(.x) %>% 
+                                st_coordinates() %>% 
+                                .[ , "X"]),
+         lat = purrr::map_dbl(geometry, ~st_centroid_within_poly(.x) %>% 
+                                st_coordinates() %>% 
+                                .[ , "Y"]))
+
+#map with labels
+p_ref <- ggplot() +
+  geom_sf(data = data_sf,
+          #so each has a different color
+          aes(fill = arbo_ID),
+          color = "gray50",
+          show.legend = FALSE) +
+  #add text of county names
+  ggrepel::geom_text_repel(data = sf_point_ref,
+                           aes(x = lon, 
+                               y = lat,
+                               label = NAME),
+                           # text size
+                           size = 3, 
+                           #keep text closer to centroids
+                           box.padding = 0.01, 
+                           point.padding = 0) +
+  #better colors
+  viridis::scale_fill_viridis(alpha = 0.25, option = "turbo", begin = 0.1, end = 0.9, discrete = TRUE) +
+  theme_arbo_map 
+  # #attempt to make as large as possible
+  # scale_x_continuous(expand = c(0,0))
+
+plot(p_ref)
+```
+
+```{r cond_rotate_ref_map_end, echo = FALSE, results = 'asis', eval=sf_wider}
+cat("\\elandscape")
+```
+```{r cond_newpage_ref_map_end, echo=FALSE, results='asis', eval=sf_taller}
+#if NOT rotating page, still want to start on a newpage for params
+cat("\\newpage")
+```
+
+
+## Parameters used
+
+The report was run with the following parameters set. 
+
+```{r params_pretty, include=TRUE, echo=FALSE}
+
+#Creates table(s) to display parameter settings
+# Main report parameters always display and
+# developer parameters in a separate table, only if it exists
+
+#Split out dev_settings to handle separately
+params_main <- params %>% purrr::list_assign('dev_settings' =  purrr::zap())
+
+#table of main report parameters
+param_table <- tibble::tibble(Parameter = names(params_main), 
+                              Value = unlist(params_main)) %>% 
+  #IF rmarkdown GUI (Shiny-based) was used to select files, 
+  #  a full file path to a temporary directory (e.g. C:/Users/.../AppData) 
+  #  AND IF a PDF report is being generated, this will trigger
+  #  it to attempt to interpret is as Latex (undefined control sequence)
+  # So, we will strip out when temp file ("0.csv" for data or 0.txt for models file)
+  # Due to a combination of browser security & not having access to the
+  #  underlying shiny app directly, it is impossible to recover 
+  #  the original file name
+  dplyr::mutate(Value = dplyr::if_else(
+    stringr::str_detect(Value, "0\\.csv$"),
+    "File selected via browser",
+    Value)) %>% 
+  dplyr::mutate(Value = dplyr::if_else(
+    stringr::str_detect(Value, "0\\.txt$"),
+    "File selected via browser",
+    Value))
+  
+  
+#add version number
+version_row <- tibble(Parameter = "version", Value = version_text)
+param_table <- param_table %>% 
+  bind_rows(version_row)
+
+knitr::kable(param_table, 
+             caption = "Parameters used",
+             row.names = FALSE)
+
+#dev settings, removing data objects & replacing with notifier
+params_dev <- params$dev_settings
+if (!is.null(params_dev$data_human)){params_dev$data_human <-"Override data given"} 
+if (!is.null(params_dev$data_mosquito)){params_dev$data_mosquito <-"Override data given"}
+if (!is.null(params_dev$data_strata)){params_dev$data_strata <-"Override data given"}
+if (!is.null(params_dev$data_weather)){params_dev$data_weather <-"Override data given"}
+if (!is.null(params_dev$data_sf)){params_dev$data_sf <-"Override data given"}
+if (!is.null(params_dev$model_formulas)){params_dev$model_formulas <-"Override data given"}
+if (!is.null(params_dev$models_cached)){params_dev$models_cached <-"Override data given"}
+
+#additional table IF developer parameters were used
+if (length(params_dev) >= 1){
+  param_dev_table <- tibble::tibble(Parameter = names(unlist(params_dev)), Value = unlist(params_dev))
+  knitr::kable(param_dev_table, 
+               caption = "Advanced settings and parameters",
+               row.names = FALSE)
+}
+
+```
+
+
+```{r appendix_switch, echo=FALSE, results='asis'}
+# Conditionally creates an appendix from a child Rmd file
+# Contains more graphs, per models results as opposed to average
+
+# [DEV] Two options to optionally include child
+#https://bookdown.org/yihui/rmarkdown-cookbook/child-document.html
+#1. {r appendix_switch, child=if (create_appendix) 'ArboMAP_forecast_appendix.Rmd'}
+#     Note: would have to set create_appendix as local var prior to this code block
+#2. {r appendix_switch, echo=FALSE, results='asis'} 
+#     with if statement for knit_child() and cat()
+# [DEV] [DMN] Using second option to use system-independent subfolder path call
+#       As you can't run the child document directly, I want it outside of the main folder
+
+if (params$create_appendix){
+  #child file location
+  appx_file <- file.path("rmd_sections", "ArboMAP_appendix.Rmd")
+  #knit document, saving output to object
+  appx <- knitr::knit_child(appx_file, quiet = TRUE)
+  #cat the object to make it render in main document
+  cat(appx, sep = "\n")
+}
+```
+

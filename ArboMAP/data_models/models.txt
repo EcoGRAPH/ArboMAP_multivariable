@@ -1,0 +1,8 @@
+"cub-fx-nonanom","any_cases ~ 0 + arbo_ID + mir_stat + s(lag, by=var1, bs='cr') + s(lag, by=var2, bs='cr')"
+"cub-fx-anom","any_cases ~ 0 + arbo_ID + mir_stat + s(lag, by=var1_anom, bs='cr') + s(lag, by=var2_anom, bs='cr') + s(doy, bs='cr')"
+"cub-sv-nonanom","any_cases ~ 0 + arbo_ID + mir_stat + te(lag, doymat, by=var1, bs='cr') + te(lag, doymat, by=var2, bs='cr')"
+"cub-sv-anom","any_cases ~ 0 + arbo_ID + mir_stat + te(lag, doymat, by=var1_anom, bs='cr') + te(lag, doymat, by=var2_anom, bs='cr') + s(doy, bs='cr')"
+"tp-fx-nonanom","any_cases ~ 0 + arbo_ID + mir_stat + s(lag, by=var1, bs='tp') + s(lag, by=var2, bs='tp')"
+"tp-fx-anom","any_cases ~ 0 + arbo_ID + mir_stat + s(lag, by=var1_anom, bs='tp') + s(lag, by=var2_anom, bs='tp') + s(doy, bs='tp')"
+"tp-sv-nonanom","any_cases ~ 0 + arbo_ID + mir_stat + te(lag, doymat, by=var1, bs='tp') + te(lag, doymat, by=var2, bs='tp')"
+"tp-sv-anom","any_cases ~ 0 + arbo_ID + mir_stat + te(lag, doymat, by=var1_anom, bs='tp') + te(lag, doymat, by=var2_anom, bs='tp') + s(doy, bs='tp')"
