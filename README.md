@@ -28,6 +28,8 @@ Added multivariable versions of ArboMAP.
 3vars can run three environmental variables.
 4vars can run four environmental variables. 
 
+https://doi.org/10.5281/zenodo.15183297
+
 v4.0
 
 Massive rewrite of the report output and format, including figures and narrative, based on feedback from public health partners.
