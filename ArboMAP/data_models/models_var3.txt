@@ -1,0 +1,1 @@
+"tp-fx-anom","any_cases ~ 0 + arbo_ID + s(lag, by=var1_anom, bs='tp') + s(lag, by=var2_anom, bs='tp') + s(lag, by=var3_anom, bs='tp') + s(doy, bs='tp')"
