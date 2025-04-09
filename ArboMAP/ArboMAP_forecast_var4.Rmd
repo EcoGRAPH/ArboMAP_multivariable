@@ -77,7 +77,7 @@ params:
     value: !r file.path("data_spatial", "sd_counties.RDS")
   file_models:
     label: Modelling formulas file
-    value: !r file.path("data_models", "models_var4.txt")
+    value: !r file.path("data_models", "models.txt")
     input: file
   folder_weather:
     label: Folder where weather/environmental data files are located
