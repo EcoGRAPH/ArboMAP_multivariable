@@ -62,7 +62,7 @@ params:
     input: file
   file_mosquito:
     label: Mosquito pool data file
-    value: !r file.path("data_mosquito", "LA_mosquito_data_20230628.csv")
+    value: !r file.path("data_mosquito", "LA_mosquito_data.csv")
     input: file
   file_strata:
     label: Stratification file, leave as "" if no strata
@@ -74,7 +74,7 @@ params:
     value: !r file.path("data_spatial", "LA_counties.RDS")
   file_models:
     label: Modelling formulas file
-    value: !r file.path("data_models", "models_var3.txt")
+    value: !r file.path("data_models", "models.txt")
     input: file
   folder_weather:
     label: Folder where weather/environmental data files are located
